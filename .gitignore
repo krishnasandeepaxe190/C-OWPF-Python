@@ -1,0 +1,29 @@
+# Only the Python translation is tracked/pushed to GitHub.
+# The MATLAB source and manuscript documents stay local.
+/Matlab/
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.ipynb_checkpoints/
+
+# Solver / run logs and outputs
+*.log
+Python/outputs/
+Python/results/
+
+# epyt / EPANET runtime temp artifacts
+*_temp.inp
+*_temp.txt
+*.rpt
+*.bin
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

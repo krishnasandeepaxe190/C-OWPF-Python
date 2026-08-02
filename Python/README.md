@@ -1,0 +1,84 @@
+# FSP Optimal Water Flow (OWF) — Python
+
+Python translation of the water-side (WDN) **Optimal Water Flow** problem from the
+MATLAB C-OWPF code, restricted to **fixed-speed pumps (FSPs)**. VSP and PRV models
+are intentionally out of scope.
+
+Each iteration of a **successive linear-approximation** loop is a **MILP** — linear
+objective and constraints with binary pump on/off variables — solved with
+**HiGHS** through **CVXPY**. EPANET `.inp` parsing and hydraulic ground-truth use
+**epyt** (the EPANET-Python-Toolkit, which mirrors the EPANET-MATLAB-Toolkit).
+
+## Install & run
+
+```bash
+pip install -r requirements.txt
+python main_owf.py                       # 8-node, time-of-use price, EPANET init
+python main_owf.py --net 8 --time 12 --verbose
+pytest tests/                            # regression suite
+```
+
+Expected 8-node result: converges in a few iterations to `status=optimal`; total
+true FSP power matches EPANET within ~0.01%.
+
+## Layout
+
+```
+Python/
+├── main_owf.py                 # entry point            ≈ Main_OWF_IEEE_ACCESS.m
+├── owf/
+│   ├── config.py               # network specs, pump curves, prices, solver settings
+│   ├── epanet_io.py            # read_inp.m + init_epanet.m   (via epyt)
+│   ├── connection_matrices.py  # ConnectionMatrices_WDN.m  (Pi, Λ, Θ, Τ, Κ, Ω, Δ …)
+│   ├── network.py              # WDN_setup_IEEE_ACCESS.m + definebounds_WDN.m
+│   ├── initial_values.py       # Initial_Values_WDN.m
+│   ├── linearization.py        # CalculateNewIterationValues.m
+│   ├── constraints.py          # every define*_CVX.m  → one function
+│   ├── solver.py               # WDN_OWF_IEEEACCESS_cvx.m  (the MILP loop)
+│   └── validation.py           # EPANET error-norm check (tail of Main_*.m)
+├── data/eightnode/…            # EPANET .inp (self-contained)
+└── tests/test_eightnode.py
+```
+
+## MATLAB → Python map
+
+| MATLAB module | Python | What it does |
+|---|---|---|
+| `Main_OWF_IEEE_ACCESS.m` | `main_owf.py` | CLI entry, solve + validate |
+| `WDN_setup_IEEE_ACCESS.m` / `definebounds_WDN.m` | `network.py` | assemble `WDN`, bounds, prices |
+| `Prepare_net_WDN.m` / `read_inp.m` / `init_epanet.m` | `epanet_io.py` | parse `.inp`, run EPANET |
+| `ConnectionMatrices_WDN.m` | `connection_matrices.py` | incidence / selection matrices |
+| `Initial_Values_WDN.m` | `initial_values.py` | initial linearization point |
+| `CalculateNewIterationValues.m` | `linearization.py` | relinearize Cp, C1M, C2M, A′, B′ |
+| `define*_CVX.m` | `constraints.py` | constraints + objective |
+| `WDN_OWF_IEEEACCESS_cvx.m` | `solver.py` | successive-linearization MILP loop |
+
+## Formulation (per iteration, all linear in the decision variables)
+
+Decision variables over `Time` steps: pipe+pump `Flows`, nodal `Heads`, pump power
+`Ppump`, pump `OnOff` (binary), tank auxiliaries `Hdummy`, `TankFlow_aux`.
+
+- **Objective** — min Σₜ price(t)·Σ Ppump/1000 (energy cost)
+- **Pipe head loss** — `Π̃·H = Cp + Π′·q` (linearized Hazen–Williams)
+- **Mass balance** — `Π_reduced·q = −demand`
+- **Pump flow** — `0 ≤ q_pump ≤ q_max·OnOff`
+- **Pump head-gain** — Big-M curve enforced only when `OnOff = 1`
+- **Pump power** — `Ppump = A′·q_pump + B′·OnOff` (Taylor of FSP power)
+- **Tank dynamics** — integrator state-space + head bounds + terminal level
+- **Reservoir / junction head bounds**
+
+## Notes & deviations from the MATLAB
+
+- **Horizon (`Time`)** is driven by the EPANET demand-pattern length (12 for the
+  8-node case), not hard-coded to 24 as in `Main_OWF_IEEE_ACCESS.m` (which would
+  over-index the 12-step pattern). Override with `--time`.
+- **Mass-balance warm-up**: the MATLAB loop disables mass balance for the first 10
+  iterations. Python enforces it from iteration 0 by default (physically correct);
+  set `SolverConfig.mass_balance_warmup=True` to reproduce the original behavior.
+- **Solver**: HiGHS via CVXPY replaces CVX + Gurobi/SDPT3. The per-iteration
+  problem is a genuine MILP.
+- **Validation** currently compares against EPANET's own rule-based operation. A
+  stricter check (fix the optimized schedule back into EPANET and re-simulate, per
+  the paper's Fig. 4) is a planned refinement.
+- **Out of scope**: VSPs, PRVs, and the power-network (PDN) coupling.
+```
