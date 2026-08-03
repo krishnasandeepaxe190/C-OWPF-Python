@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 
 from .connection_matrices import Matrices
-from .epanet_io import RawNetwork, run_epanet
+from .epanet_io import RawNetwork
 from .linearization import LinPoint, PumpParams, linearize, stack_eps
 
 
@@ -19,12 +19,17 @@ def initial_point(
     bounds,
     time: int,
     choice: int,
+    flows_ep: np.ndarray,
+    heads_ep: np.ndarray,
 ) -> tuple[LinPoint, np.ndarray, np.ndarray]:
-    """Return (initial LinPoint, stacked iterate int_eps, initial OnOff)."""
+    """Return (initial LinPoint, stacked iterate int_eps, initial OnOff).
+
+    ``flows_ep``/``heads_ep`` are EPANET's computed time series (steps x L|N),
+    supplied by the caller so EPANET is only run once.
+    """
     n_pumps = len(raw.link_pump_index)
 
     if choice == 1:
-        flows_ep, heads_ep, _ = run_epanet(raw)   # (steps, L), (steps, N)
         steps = min(time, flows_ep.shape[0])
         int_flows = flows_ep[:steps, :].T          # (L x T)
         int_heads = heads_ep[:steps, :].T          # (N x T)

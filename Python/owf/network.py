@@ -13,7 +13,7 @@ import numpy as np
 from . import config as cfg
 from .config import SolverConfig
 from .connection_matrices import Matrices, build_matrices
-from .epanet_io import RawNetwork, read_inp
+from .epanet_io import RawNetwork, read_inp, run_epanet
 from .initial_values import initial_point
 from .linearization import LinPoint, PumpParams
 
@@ -83,7 +83,11 @@ class WDN:
 
 
 def _pump_params(raw: RawNetwork, spec: cfg.NetworkSpec) -> PumpParams:
-    coeff = np.asarray(spec.pump_coefficients, dtype=float)  # (Pu, 3)
+    # Prefer an explicit config override; otherwise use EPANET-derived coefficients.
+    if spec.pump_coefficients is not None:
+        coeff = np.asarray(spec.pump_coefficients, dtype=float)
+    else:
+        coeff = np.asarray(raw.pump_coefficients, dtype=float)
     if coeff.shape[0] != raw.link_pump_count:
         raise ValueError(
             f"{spec.name}: {coeff.shape[0]} pump coeff rows but EPANET reports "
@@ -121,7 +125,10 @@ def _bounds(raw: RawNetwork, tank: TankParams, time: int) -> Bounds:
 def _price(config: SolverConfig, time: int) -> np.ndarray:
     if config.price_choice == 1:
         price = np.asarray(cfg.PRICE_PATTERN, dtype=float) * cfg.PRICE_BASE
-        return price[:time]
+        if time <= price.size:
+            return price[:time]
+        reps = int(np.ceil(time / price.size))
+        return np.tile(price, reps)[:time]
     return np.ones(time)
 
 
@@ -129,24 +136,30 @@ def setup(config: SolverConfig) -> WDN:
     """Build the full WDN problem data for the given configuration."""
     spec = config.spec
     raw = read_inp(spec.inp_path)
+    M = build_matrices(raw)
 
-    # Resolve horizon: default to the demand-pattern length, clamped.
-    pattern_len = raw.junction_profile.shape[1]
-    time = config.time if config.time is not None else pattern_len
-    time = int(min(time, pattern_len))
+    # One EPANET run supplies the demand profile and the choice=1 initial point.
+    flows_ep, heads_ep, _, demand_ep = run_epanet(raw)
+
+    # Resolve horizon: default to EPANET's simulation length, clamped.
+    sim_steps = flows_ep.shape[0]
+    time = config.time if config.time is not None else sim_steps
+    time = int(min(time, sim_steps))
 
     pump = _pump_params(raw, spec)
     tank = _tank_params(raw, time)
     bounds = _bounds(raw, tank, time)
     price_final = _price(config, time)
-    junction_demand_profile = raw.junction_profile[:, :time]
+
+    # Junction demand from EPANET's computed time series: (steps x N) -> (J x T).
+    junction_demand_profile = demand_ep[:time, raw.junction_index].T
 
     lin0, int_eps, int_onoff = initial_point(
-        raw, build_matrices(raw), pump, bounds, time, config.choice
+        raw, M, pump, bounds, time, config.choice, flows_ep, heads_ep
     )
 
     return WDN(
-        config=config, spec=spec, raw=raw, M=build_matrices(raw), pump=pump,
+        config=config, spec=spec, raw=raw, M=M, pump=pump,
         tank=tank, bounds=bounds, time=time, price_final=price_final,
         junction_demand_profile=junction_demand_profile, lin0=lin0,
         int_eps=int_eps, int_onoff=int_onoff,

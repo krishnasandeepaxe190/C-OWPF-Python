@@ -7,7 +7,12 @@ through CVXPY. EPANET (.inp parsing and hydraulic ground truth) is handled by ep
 from .config import NETWORKS, SolverConfig
 from .network import WDN, setup
 from .solver import OWFResult, solve_owf
-from .validation import ValidationReport, validate
+from .validation import (
+    ScheduleValidationReport,
+    ValidationReport,
+    validate,
+    validate_schedule,
+)
 
 __all__ = [
     "SolverConfig",
@@ -18,4 +23,6 @@ __all__ = [
     "solve_owf",
     "ValidationReport",
     "validate",
+    "ScheduleValidationReport",
+    "validate_schedule",
 ]

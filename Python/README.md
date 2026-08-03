@@ -14,12 +14,21 @@ objective and constraints with binary pump on/off variables — solved with
 ```bash
 pip install -r requirements.txt
 python main_owf.py                       # 8-node, time-of-use price, EPANET init
-python main_owf.py --net 8 --time 12 --verbose
+python main_owf.py --net 3 --verbose     # 3-node
 pytest tests/                            # regression suite
 ```
 
-Expected 8-node result: converges in a few iterations to `status=optimal`; total
-true FSP power matches EPANET within ~0.01%.
+## Network status
+
+| `--net` | Network | Status |
+|---|---|---|
+| 8  | 8-node tutorial | ✅ converges; schedule-imposed validation ≈ 0.15 ft / 1 GPM |
+| 3  | 3-node large-pump | ✅ converges; schedule-imposed validation ≈ 0.005 ft / 0.01 GPM |
+| 11 | Net1 (looped) | ⚠️ builds & derives data, but the successive-linearization loop does **not** converge from the default init — needs a tuned warm-start (see Notes) |
+
+Pump curve coefficients are **derived from each network's EPANET head curve**, and
+the junction demand profile is taken from EPANET's computed time series, so the
+optimizer stays consistent with EPANET regardless of pattern lengths or units.
 
 ## Layout
 
@@ -67,18 +76,37 @@ Decision variables over `Time` steps: pipe+pump `Flows`, nodal `Heads`, pump pow
 - **Tank dynamics** — integrator state-space + head bounds + terminal level
 - **Reservoir / junction head bounds**
 
+## Validation
+
+Two levels, both in `validation.py`:
+
+- `validate()` — Euclidean error norms vs EPANET's own (rule-based) operation.
+- `validate_schedule()` — **fixes the optimized pump schedule back into EPANET**,
+  deletes the existing controls/rules, re-simulates the true nonlinear hydraulics,
+  and compares heads/flows (reproduces the paper's Fig. 4 feasibility check). This
+  is the apples-to-apples check: 8-node ≈ 0.15 ft, 3-node ≈ 0.005 ft.
+
 ## Notes & deviations from the MATLAB
 
-- **Horizon (`Time`)** is driven by the EPANET demand-pattern length (12 for the
-  8-node case), not hard-coded to 24 as in `Main_OWF_IEEE_ACCESS.m` (which would
-  over-index the 12-step pattern). Override with `--time`.
+- **Pump coefficients** are derived from each network's EPANET head curve
+  (`epanet_io._derive_pump_coefficients`) rather than hard-coded per `Net_num` as
+  in `Prepare_net_WDN.m` — this fixes value drift (e.g. the 3-node "large pump")
+  and keeps the optimizer consistent with EPANET. Override via
+  `NetworkSpec.pump_coefficients`.
+- **Demand** is taken from EPANET's computed time series, so pattern wrapping,
+  default patterns and mixed pattern lengths match EPANET exactly.
+- **Horizon (`Time`)** is driven by EPANET's simulation length, not hard-coded to
+  24 as in `Main_OWF_IEEE_ACCESS.m`. Override with `--time`.
 - **Mass-balance warm-up**: the MATLAB loop disables mass balance for the first 10
   iterations. Python enforces it from iteration 0 by default (physically correct);
   set `SolverConfig.mass_balance_warmup=True` to reproduce the original behavior.
-- **Solver**: HiGHS via CVXPY replaces CVX + Gurobi/SDPT3. The per-iteration
-  problem is a genuine MILP.
-- **Validation** currently compares against EPANET's own rule-based operation. A
-  stricter check (fix the optimized schedule back into EPANET and re-simulate, per
-  the paper's Fig. 4) is a planned refinement.
+- **Solver**: HiGHS via CVXPY replaces CVX + Gurobi/SDPT3. Each iteration is a
+  genuine MILP.
+- **Net1 convergence**: the successive-linearization loop does not converge for the
+  looped Net1 from the default initialization — the tank head is over-determined by
+  both the hydraulic network and the tank integrator, and the linear approximation
+  can't reconcile them at the starting point. A tuned warm-start (bound homotopy or
+  the flow-damping `Flows + 0.5*(Flows - Flows_save)` the MATLAB leaves commented)
+  is future work.
 - **Out of scope**: VSPs, PRVs, and the power-network (PDN) coupling.
 ```

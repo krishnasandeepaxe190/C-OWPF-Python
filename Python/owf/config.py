@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 # Repository-relative data directory (Python/data/...).
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -26,16 +26,17 @@ DEL_TK = 8.0208
 class NetworkSpec:
     """Everything network-specific needed to build the OWF problem.
 
-    ``pump_coefficients`` is one ``[h0, r, v]`` row per pump, giving the pump
-    head-gain curve  H_gain(q) = h0 - r * q**v  and (for v=2) the FSP power
-    model. These reproduce the values hard-coded per ``Net_num`` in
-    ``Prepare_net_WDN.m``.
+    ``pump_coefficients`` is an optional override: one ``[h0, r, v]`` row per pump
+    giving the pump head-gain curve  H_gain(q) = h0 - r * q**v.  When ``None``
+    (the default) the coefficients are derived from the EPANET pump head curve,
+    which keeps the optimizer consistent with EPANET and avoids the value drift
+    seen in the hard-coded ``Prepare_net_WDN.m`` tables.
     """
 
     net_num: int
     name: str
     inp_relpath: str  # relative to DATA_DIR
-    pump_coefficients: list[list[float]]
+    pump_coefficients: Optional[List[List[float]]] = None
 
     @property
     def inp_path(self) -> Path:
@@ -45,24 +46,23 @@ class NetworkSpec:
 # Registry of supported FSP networks. Only the 8-node case ships with data for
 # now; 3-node / Net1 specs are kept here so they drop in once their .inp files
 # are copied into Python/data/.
+# Pump coefficients are derived from each network's EPANET head curve by default
+# (pump_coefficients=None). Set an explicit override only to force specific values.
 NETWORKS: dict[int, NetworkSpec] = {
     8: NetworkSpec(
         net_num=8,
         name="eightnode",
         inp_relpath="eightnode/tutorial8node_modified.inp",
-        pump_coefficients=[[666.67, 4.631e-06, 2.0]],  # large pump (Prepare_net_WDN.m)
     ),
     3: NetworkSpec(
         net_num=3,
         name="threenode",
         inp_relpath="threenode/Threenodes-gp_largepump.inp",
-        pump_coefficients=[[333.33, 0.0002315, 2.0]],
     ),
     11: NetworkSpec(
         net_num=11,
         name="net1",
         inp_relpath="net1/Net1_Shen_extendedtime.inp",
-        pump_coefficients=[[333.33, 3.704e-05, 2.0]],
     ),
 }
 

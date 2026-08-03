@@ -32,6 +32,7 @@ class RawNetwork:
     link_pump_index: np.ndarray      # 0-based
     link_pump_count: int
     link_valve_index: np.ndarray     # 0-based
+    pump_coefficients: np.ndarray    # (Pu, 3) [h0, r, v] derived from EPANET curves
 
     # Nodes
     node_index: np.ndarray           # 0-based [0..N-1]
@@ -51,10 +52,6 @@ class RawNetwork:
     tank_init_level: np.ndarray      # init head = init level + elevation
     tank_area: np.ndarray            # A_tk = pi*(D/2)^2
 
-    # Demands
-    junction_profile: np.ndarray     # (n_junctions, pattern_len): base * pattern
-    pattern: np.ndarray              # raw pattern matrix
-
     # keep the epyt handle so we can run the hydraulic simulation later
     handle: object
 
@@ -65,6 +62,34 @@ class RawNetwork:
     @property
     def n_links(self) -> int:
         return len(self.link_name_id)
+
+
+def _derive_pump_coefficients(d, n_pumps: int) -> np.ndarray:
+    """Derive pump curve coefficients [h0, r, v=2] from EPANET head curves.
+
+    For a single design point (Qd, Hd) EPANET's convention gives
+    ``h0 = 1.3333 Hd`` and ``r = h0 / (2 Qd)**2`` (so H_gain = h0 - r q^2 passes
+    through (0, 1.3333 Hd), (Qd, Hd) and (2 Qd, 0)); multi-point curves are fit
+    to H = h0 - r q^2 by least squares. Assumes single-pump FSP networks
+    (all in-scope cases); override via ``NetworkSpec.pump_coefficients`` otherwise.
+    """
+    raw = list(np.asarray(d.getLinkPumpHeadCurveIndex()).ravel().astype(int))
+    # epyt returns [curveIdx, pumpLinkIdx] per pump for single-pump networks.
+    curve_idx = raw[:n_pumps]
+    ci = d.getCurvesInfo()
+    coeffs = []
+    for c in curve_idx:
+        X = np.asarray(ci.CurveXvalue[c - 1], dtype=float)
+        Y = np.asarray(ci.CurveYvalue[c - 1], dtype=float)
+        if X.size == 1:
+            Qd, Hd = float(X[0]), float(Y[0])
+            h0 = 1.3333 * Hd
+            r = h0 / ((2.0 * Qd) ** 2)
+        else:
+            A = np.vstack([np.ones_like(X), -X ** 2]).T
+            (h0, r), *_ = np.linalg.lstsq(A, Y, rcond=None)
+        coeffs.append([float(h0), float(r), 2.0])
+    return np.asarray(coeffs, dtype=float)
 
 
 def read_inp(inp_path) -> RawNetwork:
@@ -89,6 +114,7 @@ def read_inp(inp_path) -> RawNetwork:
     link_pump_count = int(d.getLinkPumpCount())
     valve_raw = np.asarray(d.getLinkValveIndex(), dtype=float).ravel()
     link_valve_index = (valve_raw.astype(int) - 1) if valve_raw.size else np.array([], dtype=int)
+    pump_coefficients = _derive_pump_coefficients(d, link_pump_count)
 
     # Hazen-Williams resistance (read_inp.m). Only defined for pipes; pumps have
     # roughness/diameter 0 -> guard against divide-by-zero and set them to 0.
@@ -121,19 +147,9 @@ def read_inp(inp_path) -> RawNetwork:
     tank_init_level = np.asarray(d.getNodeTankInitialLevel(), dtype=float) + tank_elev
     tank_area = np.pi * (tank_diameter / 2.0) ** 2
 
-    # --- demands: build per-junction demand profile = base * pattern ---
-    base_demands = np.asarray(d.getNodeBaseDemands()[1], dtype=float)  # over all nodes
-    pattern = np.atleast_2d(np.asarray(d.getPattern(), dtype=float))   # (n_patterns, len)
-    pat_idx = np.asarray(d.getNodeDemandPatternIndex()[1], dtype=int)  # per node, 1-based
-    pattern_len = pattern.shape[1]
-
-    n_junc = len(junction_index)
-    junction_profile = np.zeros((n_junc, pattern_len))
-    for k, j in enumerate(junction_index):
-        # read_inp.m maps pattern index 0/1 -> first pattern row, else row (idx-1).
-        row = max(int(pat_idx[j]), 1) - 1
-        row = min(row, pattern.shape[0] - 1)
-        junction_profile[k, :] = base_demands[j] * pattern[row, :]
+    # Demands are taken from EPANET's computed time series (run_epanet) rather
+    # than rebuilt from base*pattern here -- that way pattern wrapping, default
+    # patterns and mixed pattern lengths match EPANET exactly.
 
     return RawNetwork(
         link_name_id=link_name_id,
@@ -146,6 +162,7 @@ def read_inp(inp_path) -> RawNetwork:
         link_pump_index=link_pump_index,
         link_pump_count=link_pump_count,
         link_valve_index=link_valve_index,
+        pump_coefficients=pump_coefficients,
         node_index=node_index,
         junction_index=junction_index,
         reservoir_index=reservoir_index,
@@ -158,16 +175,14 @@ def read_inp(inp_path) -> RawNetwork:
         tank_max_level=tank_max_level,
         tank_init_level=tank_init_level,
         tank_area=tank_area,
-        junction_profile=junction_profile,
-        pattern=pattern,
         handle=d,
     )
 
 
-def run_epanet(raw: RawNetwork) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def run_epanet(raw: RawNetwork) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Extended-period hydraulic simulation (ports init_epanet.m).
 
-    Returns (flows, heads, headloss) each shaped (n_steps, n_links|n_nodes),
+    Returns (flows, heads, headloss, demand) each shaped (n_steps, n_links|n_nodes),
     i.e. time along axis 0 -- matching the raw EPANET output ordering the MATLAB
     code transposes downstream.
     """
@@ -176,4 +191,5 @@ def run_epanet(raw: RawNetwork) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     flows = np.asarray(res.Flow, dtype=float)
     heads = np.asarray(res.Head, dtype=float)
     headloss = np.asarray(res.HeadLoss, dtype=float)
-    return flows, heads, headloss
+    demand = np.asarray(res.Demand, dtype=float)
+    return flows, heads, headloss, demand

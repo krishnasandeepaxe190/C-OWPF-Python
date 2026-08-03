@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from epyt import epanet
 
 from .epanet_io import run_epanet
 from .network import WDN
@@ -35,7 +36,7 @@ class ValidationReport:
 
 
 def validate(wdn: WDN, result: OWFResult) -> ValidationReport:
-    flows_ep, heads_ep, _ = run_epanet(wdn.raw)
+    flows_ep, heads_ep, _, _ = run_epanet(wdn.raw)
     T = wdn.time
     steps = min(T, flows_ep.shape[0])
 
@@ -58,4 +59,96 @@ def validate(wdn: WDN, result: OWFResult) -> ValidationReport:
         pump_power_opt_true=_true_pump_power(wdn, flows_opt),
         heads_epanet=heads_ep_t,
         flows_epanet=flows_ep_t,
+    )
+
+
+@dataclass
+class ScheduleValidationReport:
+    """Result of imposing the optimized pump schedule back into EPANET
+    (reproduces the paper's Fig. 4 hydraulic-feasibility check)."""
+
+    max_abs_head: float
+    max_abs_pipe_flow: float
+    max_abs_pump_flow: float
+    norm_head: float
+    norm_pipe_flow: float
+    norm_pump_flow: float
+    heads_epanet: np.ndarray   # (N x T)  EPANET heads under the imposed schedule
+    flows_epanet: np.ndarray   # (L x T)  EPANET flows under the imposed schedule
+
+    def summary(self) -> str:
+        return (
+            "EPANET schedule-imposed validation (optimized pump schedule re-run in EPANET):\n"
+            f"  max |dHead|      : {self.max_abs_head:.6g} ft\n"
+            f"  max |dPipeFlow|  : {self.max_abs_pipe_flow:.6g} GPM\n"
+            f"  max |dPumpFlow|  : {self.max_abs_pump_flow:.6g} GPM\n"
+            f"  ||dHead||        : {self.norm_head:.6g}\n"
+            f"  ||dPipeFlow||    : {self.norm_pipe_flow:.6g}\n"
+            f"  ||dPumpFlow||    : {self.norm_pump_flow:.6g}"
+        )
+
+
+def validate_schedule(wdn: WDN, result: OWFResult) -> ScheduleValidationReport:
+    """Fix the optimized pump on/off schedule into EPANET, re-simulate the true
+    nonlinear hydraulics, and compare against the optimizer's heads/flows.
+
+    Unlike :func:`validate` (which compares against EPANET's own rule-based
+    operation), this drives EPANET with the *optimized* schedule, so a good
+    linearization should reproduce EPANET closely.
+    """
+    T = wdn.time
+    pump_links = (wdn.raw.link_pump_index + 1).tolist()  # EPANET 1-based
+
+    d = epanet(str(wdn.spec.inp_path))
+    # Remove existing operating logic so our schedule governs the pumps.
+    try:
+        d.deleteControls()
+    except Exception:
+        pass
+    try:
+        if d.getRuleCount() > 0:
+            d.deleteRules()
+    except Exception:
+        pass
+
+    d.openHydraulicAnalysis()
+    d.initializeHydraulicAnalysis()
+    rows: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    tstep = 1
+    t_cur = 0
+    while tstep > 0:
+        idx = min(int(round(t_cur / 3600.0)), T - 1)
+        for p, lk in enumerate(pump_links):
+            d.setLinkStatus(lk, 1 if result.onoff[p, idx] > 0.5 else 0)
+        t = int(d.runHydraulicAnalysis())
+        rows[t] = (np.asarray(d.getNodeHydraulicHead()),
+                   np.asarray(d.getLinkFlows()))
+        tstep = d.nextHydraulicAnalysisStep()
+        t_cur += tstep
+    d.closeHydraulicAnalysis()
+    d.unload()
+
+    # Sample the state at each hour boundary (tanks can insert sub-steps).
+    ordered = sorted(rows)
+    heads_ep = np.zeros((wdn.n_nodes, T))
+    flows_ep = np.zeros((wdn.n_links, T))
+    for h in range(T):
+        tt = h * 3600
+        head, flow = rows.get(tt, rows[ordered[min(h, len(ordered) - 1)]])
+        heads_ep[:, h] = head
+        flows_ep[:, h] = flow
+
+    dh = heads_ep - result.heads[:, :T]
+    dpipe = wdn.M.Pi_prime @ (flows_ep - result.flows[:, :T])
+    dpump = wdn.M.Lambda @ (flows_ep - result.flows[:, :T])
+
+    return ScheduleValidationReport(
+        max_abs_head=float(np.max(np.abs(dh))),
+        max_abs_pipe_flow=float(np.max(np.abs(dpipe))),
+        max_abs_pump_flow=float(np.max(np.abs(dpump))),
+        norm_head=float(np.linalg.norm(dh)),
+        norm_pipe_flow=float(np.linalg.norm(dpipe)),
+        norm_pump_flow=float(np.linalg.norm(dpump)),
+        heads_epanet=heads_ep,
+        flows_epanet=flows_ep,
     )

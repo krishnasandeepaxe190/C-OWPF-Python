@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import time as _time
 
-from owf import SolverConfig, setup, solve_owf, validate
+from owf import SolverConfig, setup, solve_owf, validate, validate_schedule
 
 
 def parse_args() -> SolverConfig:
@@ -44,10 +44,17 @@ def main() -> None:
 
     print(f"\nSolve finished: status={result.status}  iterations={result.n_iter}  "
           f"converged={result.converged}  ({elapsed:.2f}s)")
+    if result.flows is None:
+        print(f"Objective (energy cost): n/a  (solver status: {result.status})")
+        print("No feasible solution -- skipping EPANET validation.")
+        return
     print(f"Objective (energy cost): {result.objective:.6f}")
 
     report = validate(wdn, result)
     print("\n" + report.summary())
+
+    sched = validate_schedule(wdn, result)
+    print("\n" + sched.summary())
 
 
 if __name__ == "__main__":
