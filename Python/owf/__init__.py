@@ -20,6 +20,15 @@ from .warmstart import (
     solve_warmstart,
 )
 
+# plots imports matplotlib lazily inside its functions, but the module itself is
+# only pulled in on demand to keep matplotlib an optional dependency.
+def __getattr__(name):  # pragma: no cover - thin lazy re-export
+    if name in {"plot_all", "plot_convergence", "plot_flows", "plot_heads",
+                "plot_pump_schedule", "plot_error_summary"}:
+        from . import plots
+        return getattr(plots, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 __all__ = [
     "SolverConfig",
     "NETWORKS",
@@ -35,4 +44,10 @@ __all__ = [
     "solve_multistart",
     "solve_fixed_schedule",
     "solve_warmstart",
+    "plot_all",
+    "plot_convergence",
+    "plot_flows",
+    "plot_heads",
+    "plot_pump_schedule",
+    "plot_error_summary",
 ]

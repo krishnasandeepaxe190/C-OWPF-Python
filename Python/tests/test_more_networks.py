@@ -76,3 +76,36 @@ def test_net1_warmstart_converges():
     assert rep.max_abs_head < 0.5          # ft
     assert rep.max_abs_pump_flow < 1.0     # GPM
 
+
+# --------------------------------------------------------------------------
+# Net2 (net 36): 36-node looped network, single pump. Like Net1 it needs the
+# EPANET warm-start; it then converges and matches EPANET closely.
+# --------------------------------------------------------------------------
+def test_net2_builds():
+    wdn = setup(SolverConfig(net_num=36))
+    assert wdn.n_nodes == 36
+    assert wdn.n_links == 40
+    assert wdn.n_pumps == 1
+    assert wdn.n_tanks == 1
+    # pump coefficients derived from EPANET single design point (2000, 300)
+    assert wdn.pump.h0[0] == pytest.approx(400.0, rel=1e-2)
+    assert wdn.pump.max_flow[0] == pytest.approx(4000.0, rel=1e-2)
+
+
+def test_net2_warmstart_converges():
+    wdn = setup(SolverConfig(net_num=36, soft_bounds=True, damping=0.6,
+                             penalty_weight=1e3, penalty_growth=1.5,
+                             max_iter=60, feas_tol=0.5))
+    result, _ = solve_warmstart(wdn, verbose=False)
+    assert result.converged
+    assert result.max_slack < 0.5
+    rep = validate_schedule(wdn, result)
+    assert rep.max_abs_head < 0.5          # ft
+    assert rep.max_abs_pump_flow < 1.0     # GPM
+
+
+def test_ky3_not_registered():
+    """KY3 is archived (pumps carry no EPANET head curve) -- not a live network."""
+    from owf import NETWORKS
+    assert 275 not in NETWORKS
+

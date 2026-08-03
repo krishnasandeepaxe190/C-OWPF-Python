@@ -73,15 +73,23 @@ def _derive_pump_coefficients(d, n_pumps: int) -> np.ndarray:
     For a single design point (Qd, Hd) EPANET's convention gives
     ``h0 = 1.3333 Hd`` and ``r = h0 / (2 Qd)**2`` (so H_gain = h0 - r q^2 passes
     through (0, 1.3333 Hd), (Qd, Hd) and (2 Qd, 0)); multi-point curves are fit
-    to H = h0 - r q^2 by least squares. Assumes single-pump FSP networks
-    (all in-scope cases); override via ``NetworkSpec.pump_coefficients`` otherwise.
+    to H = h0 - r Q^v.
+
+    Pumps with no head curve (EPANET curve index 0 -- e.g. constant-power pumps)
+    cannot be modeled by this FSP head-gain form; they yield NaN coefficients and
+    must be supplied via ``NetworkSpec.pump_coefficients``.
     """
     raw = list(np.asarray(d.getLinkPumpHeadCurveIndex()).ravel().astype(int))
-    # epyt returns [curveIdx, pumpLinkIdx] per pump for single-pump networks.
+    # epyt appends the pump link indices after the curve indices; the first
+    # n_pumps entries are the head-curve indices (0 = no curve attached).
     curve_idx = raw[:n_pumps]
     ci = d.getCurvesInfo()
+    n_curves = len(ci.CurveXvalue)
     coeffs = []
     for c in curve_idx:
+        if c < 1 or c > n_curves:      # no head curve attached to this pump
+            coeffs.append([np.nan, np.nan, 2.0])
+            continue
         X = np.asarray(ci.CurveXvalue[c - 1], dtype=float)
         Y = np.asarray(ci.CurveYvalue[c - 1], dtype=float)
         if X.size == 1:

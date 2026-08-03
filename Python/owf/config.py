@@ -64,6 +64,14 @@ NETWORKS: dict[int, NetworkSpec] = {
         name="net1",
         inp_relpath="net1/Net1_Shen_extendedtime.inp",
     ),
+    36: NetworkSpec(
+        net_num=36,
+        name="net2",
+        inp_relpath="net2/epanet2_modified.inp",
+    ),
+    # KY3 (275 nodes / 371 links, 5 pumps, 3 reservoirs, 3 tanks) is archived under
+    # data/archive/ky3/. Its pumps carry no EPANET head curve, so it needs explicit
+    # [h0, r, v] coefficients before it can be registered here.
 }
 
 # Time-of-use price pattern (24h) from WDN_setup_IEEE_ACCESS.m.

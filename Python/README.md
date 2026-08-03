@@ -16,16 +16,41 @@ pip install -r requirements.txt
 python main_owf.py                       # 8-node, time-of-use price, EPANET init
 python main_owf.py --net 3 --verbose     # 3-node
 python main_owf.py --net 11 --warmstart  # Net1 (looped): EPANET multi-start warm-start
+python main_owf.py --net 36 --warmstart  # Net2 (looped)
+python main_owf.py --net 8 --plot        # + write plots to outputs/
 pytest tests/                            # regression suite
 ```
 
+## Plots
+
+`--plot` (or `owf.plots.plot_all`) writes five PNGs to `--outdir` (default
+`outputs/`):
+
+| file | contents |
+|---|---|
+| `*_convergence.png` | successive-linearization error (log) and objective per iteration |
+| `*_pump_schedule.png` | optimized pump on/off vs the electricity price |
+| `*_flows.png` | pump + largest pipe flows, OWF vs EPANET |
+| `*_heads.png` | tank (with bounds) and junction heads, OWF vs EPANET |
+| `*_error.png` | max abs head/flow error vs EPANET per time step |
+
+The EPANET series in the flow/head plots come from the **schedule-imposed**
+re-simulation, so overlapping curves mean the linearized solution reproduces the
+true nonlinear hydraulics.
+
 ## Network status
 
-| `--net` | Network | Status |
-|---|---|---|
-| 8  | 8-node tutorial | ✅ converges; schedule-imposed validation ≈ 0.15 ft / 1 GPM |
-| 3  | 3-node large-pump | ✅ converges; schedule-imposed validation ≈ 0.005 ft / 0.01 GPM |
-| 11 | Net1 (looped) | ✅ converges with `--warmstart`; validation ≈ 0.005 ft / 0.002 GPM (default init does not converge) |
+| `--net` | Network | Size | Status |
+|---|---|---|---|
+| 8  | 8-node tutorial | 8 nodes / 9 links | ✅ converges; validation ≈ 0.15 ft / 1 GPM |
+| 3  | 3-node large-pump | 3 / 2 | ✅ converges; validation ≈ 0.005 ft / 0.01 GPM |
+| 11 | Net1 (looped) | 11 / 13 | ✅ converges with `--warmstart`; ≈ 0.005 ft / 0.002 GPM |
+| 36 | Net2 (looped) | 36 / 40 | ✅ converges with `--warmstart`; ≈ 0.013 ft / 0.001 GPM |
+
+Looped networks (Net1, Net2) do **not** converge from the default initialization —
+use `--warmstart`. KY3 is archived under `data/archive/ky3/`: its 5 pumps carry no
+EPANET head curve, so it needs explicit `[h0, r, v]` coefficients before it can be
+registered in `config.NETWORKS`.
 
 Pump curve coefficients are **derived from each network's EPANET head curve**, and
 the junction demand profile is taken from EPANET's computed time series, so the
@@ -63,7 +88,8 @@ Python/
 │   ├── constraints.py          # every define*_CVX.m  → one function
 │   ├── solver.py               # WDN_OWF_IEEEACCESS_cvx.m  (the MILP loop)
 │   ├── warmstart.py            # EPANET multi-start warm-start for looped nets
-│   └── validation.py           # EPANET error-norm + schedule-imposed check
+│   ├── validation.py           # EPANET error-norm + schedule-imposed check
+│   └── plots.py                # convergence / flow / head / schedule plots
 ├── data/eightnode/…            # EPANET .inp (self-contained)
 └── tests/test_eightnode.py
 ```

@@ -93,6 +93,13 @@ def _pump_params(raw: RawNetwork, spec: cfg.NetworkSpec) -> PumpParams:
             f"{spec.name}: {coeff.shape[0]} pump coeff rows but EPANET reports "
             f"{raw.link_pump_count} pumps."
         )
+    if not np.isfinite(coeff).all():
+        bad = np.where(~np.isfinite(coeff).all(axis=1))[0].tolist()
+        raise ValueError(
+            f"{spec.name}: pumps {bad} have no usable EPANET head curve (e.g. "
+            f"constant-power pumps). Supply NetworkSpec.pump_coefficients "
+            f"([h0, r, v] per pump) for this network."
+        )
     h0, r_m, v_m = coeff[:, 0], coeff[:, 1], coeff[:, 2]
     max_flow = (h0 / r_m) ** (1.0 / v_m)   # H_gain(max_flow) = 0; sqrt when v = 2
     return PumpParams(h0=h0, r_m=r_m, v_m=v_m, c_m=cfg.C_M, max_flow=max_flow)

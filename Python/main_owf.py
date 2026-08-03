@@ -25,6 +25,9 @@ def parse_args():
     p.add_argument("--max-iter", type=int, default=50)
     p.add_argument("--warmstart", action="store_true",
                    help="EPANET multi-start warm-start (for hard/looped nets like Net1)")
+    p.add_argument("--plot", action="store_true",
+                   help="write convergence / flow / head / schedule plots")
+    p.add_argument("--outdir", default="outputs", help="directory for --plot output")
     p.add_argument("--verbose", action="store_true")
     a = p.parse_args()
     config = SolverConfig(
@@ -39,18 +42,18 @@ def parse_args():
         config.penalty_growth = 1.5
         config.max_iter = max(config.max_iter, 80)
         config.feas_tol = 0.5
-    return config, a.warmstart
+    return config, a
 
 
 def main() -> None:
-    config, use_warmstart = parse_args()
+    config, args = parse_args()
     print(f"Building WDN (net={config.net_num}) ...")
     wdn = setup(config)
     print(f"  nodes={wdn.n_nodes}  links={wdn.n_links}  pumps={wdn.n_pumps}  "
           f"tanks={wdn.n_tanks}  reservoirs={wdn.n_reservoirs}  time={wdn.time}")
 
     t0 = _time.time()
-    if use_warmstart:
+    if args.warmstart:
         result, sched_name = solve_warmstart(wdn, verbose=config.verbose)
         print(f"  warm-start schedule: {sched_name}")
     else:
@@ -70,6 +73,13 @@ def main() -> None:
 
     sched = validate_schedule(wdn, result)
     print("\n" + sched.summary())
+
+    if args.plot:
+        from owf.plots import plot_all
+        paths = plot_all(wdn, result, sched, outdir=args.outdir)
+        print("\nPlots written:")
+        for p in paths:
+            print(f"  {p}")
 
 
 if __name__ == "__main__":

@@ -3,3 +3,4 @@ highspy>=1.7
 epyt>=2.2
 numpy>=1.24
 scipy>=1.10
+matplotlib>=3.6   # plots only (owf.plots)
