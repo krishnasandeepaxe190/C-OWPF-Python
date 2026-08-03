@@ -3,10 +3,16 @@
 Each iteration solves a MILP (linear objective, linear constraints, binary pump
 on/off) with HiGHS, then relinearizes the pipe head-loss and pump-power terms
 around the new solution until the iterate stops moving.
+
+For hard (e.g. looped) networks two warm-start aids are available via
+``SolverConfig``: ``damping`` (trust-region blending of the linearization point)
+and ``soft_bounds`` (penalty CCP -- head bounds are relaxed with penalized slacks
+so every MILP is feasible and the slacks vanish as the linearization improves).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import cvxpy as cp
 import numpy as np
@@ -31,6 +37,13 @@ class Model:
     C2M: cp.Parameter
     APrime: cp.Parameter
     BPrime: cp.Parameter
+    # optional soft-bound slacks + penalty weight (penalty CCP warm-start)
+    s_jlo: Optional[cp.Variable] = None
+    s_jhi: Optional[cp.Variable] = None
+    s_tlo: Optional[cp.Variable] = None
+    s_thi: Optional[cp.Variable] = None
+    s_term: Optional[cp.Variable] = None
+    penalty: Optional[cp.Parameter] = None
 
 
 @dataclass
@@ -46,16 +59,25 @@ class OWFResult:
     ppump_true: np.ndarray     # (Pu x T)  true nonlinear FSP power at solution
     errors: list = field(default_factory=list)
     objectives: list = field(default_factory=list)
+    max_slack: float = float("nan")   # max head-bound violation (soft_bounds only)
 
 
 def _build_model(wdn: WDN) -> Model:
     T = wdn.time
-    return Model(
+    # Pump on/off: a binary variable, or a fixed Parameter when a schedule is
+    # pinned (turns the per-iteration problem into a continuous LP -- used by the
+    # multi-start warm-start's convergence phase).
+    if wdn.config.fixed_schedule is not None:
+        onoff = cp.Parameter((wdn.n_pumps, T), name="OnOff",
+                             value=np.asarray(wdn.config.fixed_schedule, dtype=float))
+    else:
+        onoff = cp.Variable((wdn.n_pumps, T), boolean=True, name="OnOff")
+    model = Model(
         Flows=cp.Variable((wdn.n_links, T), name="Flows"),
         Heads=cp.Variable((wdn.n_nodes, T), name="Heads"),
         Ppump=cp.Variable((wdn.n_pumps, T), name="Ppump"),
         Hdummy=cp.Variable((wdn.n_tanks, T), name="Hdummy"),
-        OnOff=cp.Variable((wdn.n_pumps, T), boolean=True, name="OnOff"),
+        OnOff=onoff,
         TankFlow_aux=cp.Variable((wdn.n_tanks, T), name="TankFlow_aux"),
         Cp=cp.Parameter((wdn.n_pipes, T), name="Cp"),
         C1M=cp.Parameter((wdn.n_pumps, T), name="C1M"),
@@ -63,6 +85,15 @@ def _build_model(wdn: WDN) -> Model:
         APrime=cp.Parameter((wdn.n_pumps, T), name="APrime"),
         BPrime=cp.Parameter((wdn.n_pumps, T), name="BPrime"),
     )
+    if wdn.config.soft_bounds:
+        model.s_jlo = cp.Variable((wdn.n_junctions, T), nonneg=True, name="s_jlo")
+        model.s_jhi = cp.Variable((wdn.n_junctions, T), nonneg=True, name="s_jhi")
+        model.s_tlo = cp.Variable((T, wdn.n_tanks), nonneg=True, name="s_tlo")
+        model.s_thi = cp.Variable((T, wdn.n_tanks), nonneg=True, name="s_thi")
+        model.s_term = cp.Variable((wdn.n_tanks,), nonneg=True, name="s_term")
+        model.penalty = cp.Parameter(nonneg=True, name="penalty",
+                                     value=wdn.config.penalty_weight)
+    return model
 
 
 def _set_params(model: Model, lin: LinPoint) -> None:
@@ -73,37 +104,62 @@ def _set_params(model: Model, lin: LinPoint) -> None:
     model.BPrime.value = lin.BPrimePump
 
 
+def _max_slack(model: Model) -> float:
+    vals = []
+    for s in (model.s_jlo, model.s_jhi, model.s_tlo, model.s_thi, model.s_term):
+        if s is not None and s.value is not None:
+            vals.append(np.max(np.abs(s.value)))
+    return float(max(vals)) if vals else 0.0
+
+
 def _true_pump_power(wdn: WDN, flows: np.ndarray) -> np.ndarray:
-    """Nonlinear FSP power c_m (h0 - r q^2) q at a flow solution."""
+    """Nonlinear FSP power c_m (h0 - r f^v) f at a flow solution (general v)."""
     q = wdn.M.Lambda @ flows
     p = wdn.pump
-    return p.c_m * (p.h0[:, None] - p.r_m[:, None] * q ** 2) * q
+    return p.c_m * (p.h0[:, None] - p.r_m[:, None] * np.abs(q) ** p.v_m[:, None]) * q
 
 
-def solve_owf(wdn: WDN) -> OWFResult:
+def solve_owf(
+    wdn: WDN,
+    lin_override: Optional[LinPoint] = None,
+    eps_override: Optional[np.ndarray] = None,
+) -> OWFResult:
+    """Run the successive-linearization loop.
+
+    ``lin_override`` / ``eps_override`` let a caller seed the initial linearization
+    and iterate from an arbitrary warm-start point (e.g. EPANET flows under a
+    chosen pump schedule) instead of ``wdn.lin0`` / ``wdn.int_eps``.
+    """
     cfg = wdn.config
+    soft = cfg.soft_bounds
     model = _build_model(wdn)
-    _set_params(model, wdn.lin0)
+    _set_params(model, lin_override if lin_override is not None else wdn.lin0)
 
     warmup = cfg.mass_balance_warmup
     include_mb = not warmup
-    problem = cp.Problem(C.objective(model, wdn),
-                         C.build_constraints(model, wdn, include_mass_balance=include_mb))
+    obj = C.objective_soft(model, wdn) if soft else C.objective(model, wdn)
+    problem = cp.Problem(
+        obj, C.build_constraints(model, wdn, include_mass_balance=include_mb, soft=soft)
+    )
 
-    prev_eps = wdn.int_eps
+    prev_eps = eps_override if eps_override is not None else wdn.int_eps
+    f_lin_prev = None
     errors, objectives = [], []
     status = "not_solved"
     heads = flows = onoff = ppump = None
     converged = False
     n_iter = 0
+    max_slack = float("nan")
 
     for it in range(cfg.max_iter):
-        # MATLAB quirk: switch mass balance on after the warm-up iterations.
         if warmup and it == cfg.mass_balance_warmup_iters:
             include_mb = True
             problem = cp.Problem(
-                C.objective(model, wdn),
-                C.build_constraints(model, wdn, include_mass_balance=True),
+                obj, C.build_constraints(model, wdn, include_mass_balance=True, soft=soft)
+            )
+        if soft:
+            model.penalty.value = min(
+                cfg.penalty_max, cfg.penalty_weight * cfg.penalty_growth ** it
             )
 
         problem.solve(solver=cfg.solver, verbose=cfg.verbose)
@@ -116,23 +172,36 @@ def solve_owf(wdn: WDN) -> OWFResult:
         flows = np.asarray(model.Flows.value)
         onoff = np.asarray(model.OnOff.value)
         ppump = np.asarray(model.Ppump.value)
+        if soft:
+            max_slack = _max_slack(model)
 
         eps = stack_eps(heads, flows, onoff)
         err = error_norm(eps, prev_eps)
         prev_eps = eps
         errors.append(err)
-        objectives.append(float(problem.value))
+        objectives.append(float(C._energy_cost(model, wdn).value))
         n_iter = it + 1
 
         if cfg.verbose:
-            print(f"[iter {it}] obj={problem.value:.6f}  error={err:.6f}  status={status}")
+            extra = f"  max_slack={max_slack:.4g}" if soft else ""
+            print(f"[iter {it}] obj={objectives[-1]:.6f}  error={err:.6f}"
+                  f"  status={status}{extra}")
 
-        # relinearize around the new solution for the next MILP
-        _set_params(model, linearize(flows, wdn.M, wdn.pump))
+        # relinearize around a (damped) blend of the new and previous flow fields
+        if f_lin_prev is None or cfg.damping >= 1.0:
+            f_lin = flows
+        else:
+            f_lin = cfg.damping * flows + (1.0 - cfg.damping) * f_lin_prev
+        f_lin_prev = f_lin
+        _set_params(model, linearize(f_lin, wdn.M, wdn.pump))
 
         if err < cfg.tol:
             converged = True
             break
+
+    # With soft bounds, "converged" also requires the slacks to be ~0.
+    if soft and converged and max_slack > cfg.feas_tol:
+        converged = False
 
     return OWFResult(
         status=status,
@@ -146,4 +215,5 @@ def solve_owf(wdn: WDN) -> OWFResult:
         ppump_true=_true_pump_power(wdn, flows) if flows is not None else None,
         errors=errors,
         objectives=objectives,
+        max_slack=max_slack,
     )

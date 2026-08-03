@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from owf import SolverConfig, setup, solve_owf, validate_schedule
+from owf import SolverConfig, setup, solve_owf, solve_warmstart, validate_schedule
 
 
 # --------------------------------------------------------------------------
@@ -44,9 +44,8 @@ def test_threenode_matches_epanet_schedule(threenode):
 
 
 # --------------------------------------------------------------------------
-# Net1 (net 11): looped network -- builds and derives pump coeffs, but the
-# successive-linearization loop does not converge from the default init.
-# Documented limitation; kept as a build test so the data/spec stay wired in.
+# Net1 (net 11): looped network. The default init does not converge, but the
+# EPANET multi-start warm-start (+ fix-schedule convergence phase) does.
 # --------------------------------------------------------------------------
 def test_net1_builds():
     wdn = setup(SolverConfig(net_num=11))
@@ -58,8 +57,22 @@ def test_net1_builds():
     assert wdn.pump.max_flow[0] == pytest.approx(3000.0, rel=1e-2)
 
 
-@pytest.mark.xfail(reason="Net1 successive-linearization needs a tuned warm-start", strict=False)
-def test_net1_converges():
-    wdn = setup(SolverConfig(net_num=11))
+def test_net1_default_init_does_not_converge():
+    """Documents the limitation the warm-start solves."""
+    wdn = setup(SolverConfig(net_num=11, max_iter=15))
     result = solve_owf(wdn)
+    assert not result.converged
+
+
+def test_net1_warmstart_converges():
+    """EPANET multi-start warm-start converges Net1 and matches EPANET (Fig. 4)."""
+    wdn = setup(SolverConfig(net_num=11, soft_bounds=True, damping=0.6,
+                             penalty_weight=1e3, penalty_growth=1.5,
+                             max_iter=60, feas_tol=0.5))
+    result, name = solve_warmstart(wdn, verbose=False)
     assert result.converged
+    assert result.max_slack < 0.5
+    rep = validate_schedule(wdn, result)
+    assert rep.max_abs_head < 0.5          # ft
+    assert rep.max_abs_pump_flow < 1.0     # GPM
+

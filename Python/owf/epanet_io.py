@@ -52,7 +52,10 @@ class RawNetwork:
     tank_init_level: np.ndarray      # init head = init level + elevation
     tank_area: np.ndarray            # A_tk = pi*(D/2)^2
 
-    # keep the epyt handle so we can run the hydraulic simulation later
+    # path to the source .inp (run_epanet reloads a fresh handle from it)
+    inp_path: str
+    # the epyt handle used during parsing (kept for reference; not relied upon
+    # for later simulations, which reload fresh to avoid stale-handle issues)
     handle: object
 
     @property
@@ -82,13 +85,27 @@ def _derive_pump_coefficients(d, n_pumps: int) -> np.ndarray:
         X = np.asarray(ci.CurveXvalue[c - 1], dtype=float)
         Y = np.asarray(ci.CurveYvalue[c - 1], dtype=float)
         if X.size == 1:
+            # EPANET single design point -> exactly quadratic (v = 2).
             Qd, Hd = float(X[0]), float(Y[0])
             h0 = 1.3333 * Hd
             r = h0 / ((2.0 * Qd) ** 2)
+            v = 2.0
         else:
-            A = np.vstack([np.ones_like(X), -X ** 2]).T
-            (h0, r), *_ = np.linalg.lstsq(A, Y, rcond=None)
-        coeffs.append([float(h0), float(r), 2.0])
+            # Multi-point curve: fit H = h0 - r Q^v. Take h0 as the head at the
+            # smallest flow (shutoff), then log-linearize log(h0 - H) = log r + v log Q.
+            order = np.argsort(X)
+            Xs, Ys = X[order], Y[order]
+            h0 = float(Ys[0]) if Xs[0] <= 1e-9 else float(Ys.max())
+            mask = (Xs > 0) & (Ys < h0 - 1e-9)
+            if mask.sum() >= 2:
+                v, logr = np.polyfit(np.log(Xs[mask]), np.log(h0 - Ys[mask]), 1)
+                r = float(np.exp(logr))
+                v = float(v)
+            else:  # fall back to a fixed quadratic fit
+                A = np.vstack([np.ones_like(X), -X ** 2]).T
+                (h0, r), *_ = np.linalg.lstsq(A, Y, rcond=None)
+                v = 2.0
+        coeffs.append([float(h0), float(r), float(v)])
     return np.asarray(coeffs, dtype=float)
 
 
@@ -175,8 +192,59 @@ def read_inp(inp_path) -> RawNetwork:
         tank_max_level=tank_max_level,
         tank_init_level=tank_init_level,
         tank_area=tank_area,
+        inp_path=str(inp_path),
         handle=d,
     )
+
+
+def simulate_with_schedule(
+    inp_path, pump_links_1based, onoff: np.ndarray, time: int,
+    n_nodes: int, n_links: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Impose a pump on/off schedule in EPANET and return the true hydraulics.
+
+    Deletes existing controls/rules, drives each pump's status hour-by-hour from
+    ``onoff`` (Pu x T), runs the extended-period simulation, and returns
+    (heads, flows) shaped (N x time), (L x time) sampled at hour boundaries.
+    Shared by the schedule-imposed validation and the EPANET warm-start.
+    """
+    from epyt import epanet
+
+    d = epanet(str(inp_path))
+    try:
+        d.deleteControls()
+    except Exception:
+        pass
+    try:
+        if d.getRuleCount() > 0:
+            d.deleteRules()
+    except Exception:
+        pass
+
+    d.openHydraulicAnalysis()
+    d.initializeHydraulicAnalysis()
+    rows: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    tstep, t_cur = 1, 0
+    while tstep > 0:
+        idx = min(int(round(t_cur / 3600.0)), time - 1)
+        for p, lk in enumerate(pump_links_1based):
+            d.setLinkStatus(lk, 1 if onoff[p, idx] > 0.5 else 0)
+        t = int(d.runHydraulicAnalysis())
+        rows[t] = (np.asarray(d.getNodeHydraulicHead()),
+                   np.asarray(d.getLinkFlows()))
+        tstep = d.nextHydraulicAnalysisStep()
+        t_cur += tstep
+    d.closeHydraulicAnalysis()
+    d.unload()
+
+    ordered = sorted(rows)
+    heads = np.zeros((n_nodes, time))
+    flows = np.zeros((n_links, time))
+    for h in range(time):
+        head, flow = rows.get(h * 3600, rows[ordered[min(h, len(ordered) - 1)]])
+        heads[:, h] = head
+        flows[:, h] = flow
+    return heads, flows
 
 
 def run_epanet(raw: RawNetwork) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -185,11 +253,19 @@ def run_epanet(raw: RawNetwork) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.
     Returns (flows, heads, headloss, demand) each shaped (n_steps, n_links|n_nodes),
     i.e. time along axis 0 -- matching the raw EPANET output ordering the MATLAB
     code transposes downstream.
+
+    Loads a fresh EPANET handle from the source .inp so it stays robust even after
+    other simulations (e.g. the warm-start) have opened and unloaded handles.
     """
-    d = raw.handle
-    res = d.getComputedTimeSeries()
-    flows = np.asarray(res.Flow, dtype=float)
-    heads = np.asarray(res.Head, dtype=float)
-    headloss = np.asarray(res.HeadLoss, dtype=float)
-    demand = np.asarray(res.Demand, dtype=float)
+    from epyt import epanet
+
+    d = epanet(str(raw.inp_path))
+    try:
+        res = d.getComputedTimeSeries()
+        flows = np.asarray(res.Flow, dtype=float)
+        heads = np.asarray(res.Head, dtype=float)
+        headloss = np.asarray(res.HeadLoss, dtype=float)
+        demand = np.asarray(res.Demand, dtype=float)
+    finally:
+        d.unload()
     return flows, heads, headloss, demand

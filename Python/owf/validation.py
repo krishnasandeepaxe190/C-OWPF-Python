@@ -7,9 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from epyt import epanet
 
-from .epanet_io import run_epanet
+from .epanet_io import run_epanet, simulate_with_schedule
 from .network import WDN
 from .solver import OWFResult, _true_pump_power
 
@@ -98,45 +97,9 @@ def validate_schedule(wdn: WDN, result: OWFResult) -> ScheduleValidationReport:
     """
     T = wdn.time
     pump_links = (wdn.raw.link_pump_index + 1).tolist()  # EPANET 1-based
-
-    d = epanet(str(wdn.spec.inp_path))
-    # Remove existing operating logic so our schedule governs the pumps.
-    try:
-        d.deleteControls()
-    except Exception:
-        pass
-    try:
-        if d.getRuleCount() > 0:
-            d.deleteRules()
-    except Exception:
-        pass
-
-    d.openHydraulicAnalysis()
-    d.initializeHydraulicAnalysis()
-    rows: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    tstep = 1
-    t_cur = 0
-    while tstep > 0:
-        idx = min(int(round(t_cur / 3600.0)), T - 1)
-        for p, lk in enumerate(pump_links):
-            d.setLinkStatus(lk, 1 if result.onoff[p, idx] > 0.5 else 0)
-        t = int(d.runHydraulicAnalysis())
-        rows[t] = (np.asarray(d.getNodeHydraulicHead()),
-                   np.asarray(d.getLinkFlows()))
-        tstep = d.nextHydraulicAnalysisStep()
-        t_cur += tstep
-    d.closeHydraulicAnalysis()
-    d.unload()
-
-    # Sample the state at each hour boundary (tanks can insert sub-steps).
-    ordered = sorted(rows)
-    heads_ep = np.zeros((wdn.n_nodes, T))
-    flows_ep = np.zeros((wdn.n_links, T))
-    for h in range(T):
-        tt = h * 3600
-        head, flow = rows.get(tt, rows[ordered[min(h, len(ordered) - 1)]])
-        heads_ep[:, h] = head
-        flows_ep[:, h] = flow
+    heads_ep, flows_ep = simulate_with_schedule(
+        wdn.spec.inp_path, pump_links, result.onoff, T, wdn.n_nodes, wdn.n_links
+    )
 
     dh = heads_ep - result.heads[:, :T]
     dpipe = wdn.M.Pi_prime @ (flows_ep - result.flows[:, :T])

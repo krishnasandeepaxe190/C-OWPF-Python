@@ -89,6 +89,19 @@ class SolverConfig:
     # default here (physically-correct: always enforce mass balance).
     mass_balance_warmup: bool = False
     mass_balance_warmup_iters: int = 10
+    # Warm-start controls for hard (e.g. looped) networks:
+    #  * damping < 1 relinearizes around a blend of the new and previous flow
+    #    fields, keeping the successive linearization inside a trust region.
+    #  * soft_bounds penalizes head-bound / terminal violations with slacks
+    #    (penalty CCP), so every MILP is feasible and the slacks are driven to
+    #    zero as the linearization improves. penalty_growth ramps the weight.
+    damping: float = 1.0
+    fixed_schedule: Optional["np.ndarray"] = None  # if set, pump OnOff is fixed to it
+    soft_bounds: bool = False
+    penalty_weight: float = 1.0e3
+    penalty_growth: float = 2.0
+    penalty_max: float = 1.0e7
+    feas_tol: float = 1.0e-3   # max slack accepted as "feasible" when soft_bounds
     solver: str = "HIGHS"
     verbose: bool = False
     data_dir: Path = field(default=DATA_DIR)

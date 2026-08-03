@@ -15,6 +15,7 @@ objective and constraints with binary pump on/off variables — solved with
 pip install -r requirements.txt
 python main_owf.py                       # 8-node, time-of-use price, EPANET init
 python main_owf.py --net 3 --verbose     # 3-node
+python main_owf.py --net 11 --warmstart  # Net1 (looped): EPANET multi-start warm-start
 pytest tests/                            # regression suite
 ```
 
@@ -24,11 +25,28 @@ pytest tests/                            # regression suite
 |---|---|---|
 | 8  | 8-node tutorial | ✅ converges; schedule-imposed validation ≈ 0.15 ft / 1 GPM |
 | 3  | 3-node large-pump | ✅ converges; schedule-imposed validation ≈ 0.005 ft / 0.01 GPM |
-| 11 | Net1 (looped) | ⚠️ builds & derives data, but the successive-linearization loop does **not** converge from the default init — needs a tuned warm-start (see Notes) |
+| 11 | Net1 (looped) | ✅ converges with `--warmstart`; validation ≈ 0.005 ft / 0.002 GPM (default init does not converge) |
 
 Pump curve coefficients are **derived from each network's EPANET head curve**, and
 the junction demand profile is taken from EPANET's computed time series, so the
 optimizer stays consistent with EPANET regardless of pattern lengths or units.
+
+## Warm-start for hard (looped) networks
+
+Looped networks like Net1 don't converge from the default single-point
+initialization — the tank head is over-determined by both the hydraulic network
+and the tank integrator, and one linearization point isn't in a good basin. The
+`warmstart` module solves this in two phases (`solve_warmstart`):
+
+1. **Multi-start** — for several candidate pump on/off schedules (EPANET's own
+   rule-based schedule, all-on, all-off, off-peak/`cheap_hours`), impose each in
+   EPANET, take the resulting physically-consistent flows as the linearization
+   seed, and run the successive approximation with soft (penalized) head bounds so
+   every MILP stays feasible. Keep the schedule with the smallest bound violation.
+2. **Fix & converge** — pin that binary schedule and converge the remaining
+   continuous problem (a pure LP per iteration), which settles reliably.
+
+For Net1 this picks the off-peak schedule and converges to ≈ 0.005 ft vs EPANET.
 
 ## Layout
 
@@ -44,7 +62,8 @@ Python/
 │   ├── linearization.py        # CalculateNewIterationValues.m
 │   ├── constraints.py          # every define*_CVX.m  → one function
 │   ├── solver.py               # WDN_OWF_IEEEACCESS_cvx.m  (the MILP loop)
-│   └── validation.py           # EPANET error-norm check (tail of Main_*.m)
+│   ├── warmstart.py            # EPANET multi-start warm-start for looped nets
+│   └── validation.py           # EPANET error-norm + schedule-imposed check
 ├── data/eightnode/…            # EPANET .inp (self-contained)
 └── tests/test_eightnode.py
 ```
@@ -102,11 +121,13 @@ Two levels, both in `validation.py`:
   set `SolverConfig.mass_balance_warmup=True` to reproduce the original behavior.
 - **Solver**: HiGHS via CVXPY replaces CVX + Gurobi/SDPT3. Each iteration is a
   genuine MILP.
-- **Net1 convergence**: the successive-linearization loop does not converge for the
-  looped Net1 from the default initialization — the tank head is over-determined by
-  both the hydraulic network and the tank integrator, and the linear approximation
-  can't reconcile them at the starting point. A tuned warm-start (bound homotopy or
-  the flow-damping `Flows + 0.5*(Flows - Flows_save)` the MATLAB leaves commented)
-  is future work.
+- **Pump exponent `v`**: the head-gain / power model is `H(f) = h0 - r f^v` for
+  general `v`, not hard-coded to 2. EPANET *single-design-point* curves are exactly
+  quadratic (`v = 2`) — which is why all three in-scope networks use `v = 2` — but
+  multi-point curves get their fitted exponent, and the power linearization
+  `P(f) = c_m(h0 - r f^v) f` with `dP/df = c_m(h0 - (v+1) r f^v)` handles it.
+- **Net1 warm-start**: see the "Warm-start" section. `SolverConfig` exposes the
+  knobs: `damping` (trust-region blend of the linearization point), `soft_bounds`
+  + `penalty_*` (penalty CCP), and `fixed_schedule` (pin the pump binaries).
 - **Out of scope**: VSPs, PRVs, and the power-network (PDN) coupling.
 ```

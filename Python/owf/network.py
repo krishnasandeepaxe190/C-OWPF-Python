@@ -94,7 +94,7 @@ def _pump_params(raw: RawNetwork, spec: cfg.NetworkSpec) -> PumpParams:
             f"{raw.link_pump_count} pumps."
         )
     h0, r_m, v_m = coeff[:, 0], coeff[:, 1], coeff[:, 2]
-    max_flow = np.sqrt(h0 / r_m)
+    max_flow = (h0 / r_m) ** (1.0 / v_m)   # H_gain(max_flow) = 0; sqrt when v = 2
     return PumpParams(h0=h0, r_m=r_m, v_m=v_m, c_m=cfg.C_M, max_flow=max_flow)
 
 

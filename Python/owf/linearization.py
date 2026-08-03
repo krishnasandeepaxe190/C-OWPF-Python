@@ -43,18 +43,24 @@ def linearize(flows: np.ndarray, M: Matrices, pump: PumpParams) -> LinPoint:
     T = flows.shape[1]
     n_pumps = pump.h0.shape[0]
 
+    h0 = pump.h0[:, None]
+    r = pump.r_m[:, None]
+    v = pump.v_m[:, None]
+    absf = np.abs(pump_flows)                 # pump flows are >= 0; abs guards f^v
+
     # Hazen-Williams pipe head loss linearization
     Cp = pipe_flows * (M.Omega @ np.abs(pipe_flows) ** 0.852 - np.ones_like(pipe_flows))
 
-    # Pump head-gain curve:  H_gain(q) ~ -(C1M + C2M q) = h0 - r q^(v-1) q
-    C1M = -pump.h0[:, None] * np.ones((n_pumps, T))
-    C2M = np.zeros((n_pumps, T))
-    for i in range(n_pumps):
-        C2M[i, :] = pump.r_m[i] * pump_flows[i, :] ** (pump.v_m[i] - 1)
+    # Pump head-gain curve  H_gain(f) = h0 - r f^v  (general exponent v).
+    # Monomial linearization freezes the coefficient: r f^v ~ (r f_prev^(v-1)) f,
+    # so the enforced gain is -(C1M + C2M f) with C1M = -h0, C2M = r f_prev^(v-1).
+    C1M = -h0 * np.ones((n_pumps, T))
+    C2M = r * absf ** (v - 1)
 
-    # FSP power  P(q) = c_m (h0 - r q^2) q,  first-order Taylor about pump_flows
-    pump_power = pump.c_m * (pump.h0[:, None] - pump.r_m[:, None] * pump_flows ** 2) * pump_flows
-    pump_prime = pump.c_m * (pump.h0[:, None] - 3 * pump.r_m[:, None] * pump_flows ** 2)
+    # FSP power  P(f) = c_m (h0 - r f^v) f,  first-order Taylor about pump_flows.
+    # dP/df = c_m (h0 - (v+1) r f^v);  reduces to c_m(h0 - 3 r f^2) when v = 2.
+    pump_power = pump.c_m * (h0 - r * absf ** v) * pump_flows
+    pump_prime = pump.c_m * (h0 - (v + 1) * r * absf ** v)
     APrimePump = pump_prime
     BPrimePump = pump_power - pump_prime * pump_flows
 

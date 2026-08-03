@@ -112,14 +112,38 @@ def tank_terminal(model, wdn):
     return [model.Hdummy[:, -1] >= wdn.tank.mean_head]
 
 
-def build_constraints(model, wdn, include_mass_balance: bool = True):
-    """Assemble the full FSP OWF constraint set."""
+# --- soft (penalized) variants of the head-bound constraints, for the warm-start
+# homotopy on hard networks. Each bound is relaxed by a nonnegative slack. -------
+
+def junction_head_bounds_soft(model, wdn):
+    K = wdn.M.Kappa
+    return [
+        K @ model.Heads >= K @ wdn.bounds.min_nodal_heads - model.s_jlo,
+        K @ model.Heads <= K @ wdn.bounds.max_nodal_heads + model.s_jhi,
+    ]
+
+
+def tank_head_bounds_soft(model, wdn):
+    Tau = wdn.M.Tau
+    lo = wdn.bounds.min_nodal_heads.T @ Tau
+    hi = wdn.bounds.max_nodal_heads.T @ Tau
+    return [
+        model.Heads.T @ Tau >= lo - model.s_tlo,
+        model.Heads.T @ Tau <= hi + model.s_thi,
+    ]
+
+
+def tank_terminal_soft(model, wdn):
+    return [model.Hdummy[:, -1] >= wdn.tank.mean_head - model.s_term]
+
+
+def build_constraints(model, wdn, include_mass_balance: bool = True, soft: bool = False):
+    """Assemble the full FSP OWF constraint set (optionally with soft head bounds)."""
     cons = []
     cons += reservoir_head(model, wdn)
     cons += tank_flow_aux(model, wdn)
     cons += tank_state_space(model, wdn)
     cons += tank_hdummy_head(model, wdn)
-    cons += tank_head_bounds(model, wdn)
     cons += pipe_head_loss(model, wdn)
     if include_mass_balance:
         cons += mass_balance(model, wdn)
@@ -127,12 +151,31 @@ def build_constraints(model, wdn, include_mass_balance: bool = True):
     cons += pump_negative_headloss(model, wdn)
     cons += pump_power(model, wdn)
     cons += pump_bigm(model, wdn)
-    cons += junction_head_bounds(model, wdn)
-    cons += tank_terminal(model, wdn)
+    if soft:
+        cons += tank_head_bounds_soft(model, wdn)
+        cons += junction_head_bounds_soft(model, wdn)
+        cons += tank_terminal_soft(model, wdn)
+        cons += [model.s_jlo >= 0, model.s_jhi >= 0,
+                 model.s_tlo >= 0, model.s_thi >= 0, model.s_term >= 0]
+    else:
+        cons += tank_head_bounds(model, wdn)
+        cons += junction_head_bounds(model, wdn)
+        cons += tank_terminal(model, wdn)
     return cons
+
+
+def _energy_cost(model, wdn):
+    total_power = cp.sum(model.Ppump, axis=0)          # (T,)
+    return wdn.price_final @ (total_power / 1000.0)
 
 
 def objective(model, wdn):
     """min  sum_t price(t) * sum_pumps(Ppump)/1000   (energy cost)."""
-    total_power = cp.sum(model.Ppump, axis=0)          # (T,)
-    return cp.Minimize(wdn.price_final @ (total_power / 1000.0))
+    return cp.Minimize(_energy_cost(model, wdn))
+
+
+def objective_soft(model, wdn):
+    """Energy cost plus a penalty on head-bound slacks (penalty CCP warm-start)."""
+    penalty = (cp.sum(model.s_jlo) + cp.sum(model.s_jhi)
+               + cp.sum(model.s_tlo) + cp.sum(model.s_thi) + cp.sum(model.s_term))
+    return cp.Minimize(_energy_cost(model, wdn) + model.penalty * penalty)

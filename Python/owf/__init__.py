@@ -13,6 +13,12 @@ from .validation import (
     validate,
     validate_schedule,
 )
+from .warmstart import (
+    candidate_schedules,
+    solve_fixed_schedule,
+    solve_multistart,
+    solve_warmstart,
+)
 
 __all__ = [
     "SolverConfig",
@@ -25,4 +31,8 @@ __all__ = [
     "validate",
     "ScheduleValidationReport",
     "validate_schedule",
+    "candidate_schedules",
+    "solve_multistart",
+    "solve_fixed_schedule",
+    "solve_warmstart",
 ]
