@@ -14,6 +14,8 @@ objective and constraints with binary pump on/off variables — solved with
 ```bash
 pip install -r requirements.txt
 
+streamlit run app.py          # WEB UI: case setup, run, plots, session comparison
+
 python main_owf.py            # INTERACTIVE: pick network, get a recommended mode,
                               # run, plot, and print the comparison table
 

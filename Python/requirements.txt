@@ -4,3 +4,5 @@ epyt>=2.2
 numpy>=1.24
 scipy>=1.10
 matplotlib>=3.6   # plots only (owf.plots)
+streamlit>=1.50   # UI only (app.py)
+pandas>=2.0       # UI session table
