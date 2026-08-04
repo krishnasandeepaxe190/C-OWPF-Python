@@ -60,6 +60,49 @@ def mass_balance(model, wdn):
     return [wdn.M.Pi_reduced @ model.Flows == -wdn.junction_demand_profile]
 
 
+def closed_pipes_zero(model, wdn):
+    """Permanently-closed pipes carry no flow."""
+    ci = wdn.raw.closed_pipe_index
+    if len(ci) == 0:
+        return []
+    return [model.Flows[ci, :] == 0]
+
+
+def switched_bypasses(model, wdn):
+    """Bypass pipes that are OPEN iff their pump is OFF.
+
+    Let z = OnOff of the controlling pump (via S). When z=1 (pump on) the bypass
+    is closed: zero flow, head loss relaxed. When z=0 (pump off) the bypass is a
+    normal pipe: flow free, Hazen-Williams head loss enforced.
+    """
+    M = wdn.M
+    if not M.bypass_index.size:
+        return []
+    Mbig = wdn.config.big_m
+    z = M.S_bypass_pump @ model.OnOff                 # (Nb x T), 1 when pump on
+    bp_flow = M.Pi_prime_bypass @ model.Flows         # (Nb x T)
+    head_res = M.Pi_telda_bypass @ model.Heads - (model.Cp_bypass + bp_flow)
+    return [
+        bp_flow <= Mbig * (1 - z),        # flow = 0 when pump on (bypass closed)
+        bp_flow >= -Mbig * (1 - z),
+        head_res <= Mbig * z,             # head loss enforced when pump off
+        head_res >= -Mbig * z,
+    ]
+
+
+def pump_availability(model, wdn):
+    """Force pumps off outside their source-availability window."""
+    cons = []
+    if not wdn.pump_avail:
+        return cons
+    T = wdn.time
+    for pos, (start, end) in wdn.pump_avail.items():
+        off = [t for t in range(T) if not (start <= t < end)]
+        if off:
+            cons.append(model.OnOff[pos, off] == 0)
+    return cons
+
+
 def pump_flow(model, wdn):
     """q_min OnOff <= Lambda Q <= q_max OnOff  (flow only when pump is on)."""
     T = wdn.time
@@ -145,6 +188,9 @@ def build_constraints(model, wdn, include_mass_balance: bool = True, soft: bool 
     cons += tank_state_space(model, wdn)
     cons += tank_hdummy_head(model, wdn)
     cons += pipe_head_loss(model, wdn)
+    cons += closed_pipes_zero(model, wdn)
+    cons += switched_bypasses(model, wdn)
+    cons += pump_availability(model, wdn)
     if include_mass_balance:
         cons += mass_balance(model, wdn)
     cons += pump_flow(model, wdn)

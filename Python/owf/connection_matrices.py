@@ -35,9 +35,19 @@ class Matrices:
     Omega: np.ndarray
     Delta: np.ndarray
     pipe_index: np.ndarray  # 0-based link indices that are pipes (non-pump)
+    # switched-bypass pipes (open iff their pump is off); empty for most networks
+    bypass_index: np.ndarray          # (Nb,) 0-based link indices
+    Pi_telda_bypass: np.ndarray       # (Nb x N) incidence rows for bypasses
+    Pi_prime_bypass: np.ndarray       # (Nb x L) selects bypass flows
+    Omega_bypass: np.ndarray          # (Nb x Nb) diagonal bypass resistance
+    S_bypass_pump: np.ndarray         # (Nb x Pu) bypass -> controlling pump
 
 
-def build_matrices(raw: RawNetwork) -> Matrices:
+def build_matrices(
+    raw: RawNetwork,
+    bypass_index: np.ndarray = None,
+    bypass_pump_pos: np.ndarray = None,
+) -> Matrices:
     N = raw.n_nodes
     L = raw.n_links
     pump_index = raw.link_pump_index
@@ -45,10 +55,20 @@ def build_matrices(raw: RawNetwork) -> Matrices:
     reservoir_index = raw.reservoir_index
     junction_index = raw.junction_index
 
-    # pipes = links that are not pumps (valves are ignored in the FSP model)
-    is_pump = np.zeros(L, dtype=bool)
-    is_pump[pump_index] = True
-    pipe_index = np.where(~is_pump)[0]
+    bypass_index = (np.asarray(bypass_index, dtype=int) if bypass_index is not None
+                    else np.array([], dtype=int))
+    bypass_pump_pos = (np.asarray(bypass_pump_pos, dtype=int) if bypass_pump_pos is not None
+                       else np.array([], dtype=int))
+
+    # pipes = links that are not pumps, not permanently closed, and not switched
+    # bypasses (those get their own gated head-loss constraint). Closed pipes
+    # carry no head loss and are pinned to zero flow separately.
+    excluded = np.zeros(L, dtype=bool)
+    excluded[pump_index] = True
+    excluded[raw.closed_pipe_index] = True
+    if bypass_index.size:
+        excluded[bypass_index] = True
+    pipe_index = np.where(~excluded)[0]
 
     # Pi (N x L): +1 at from-node, -1 at to-node
     Pi = np.zeros((N, L))
@@ -79,8 +99,20 @@ def build_matrices(raw: RawNetwork) -> Matrices:
     Omega = np.diag(raw.link_resistance[pipe_index])   # (P x P)
     Delta = np.diag(raw.tank_area)                     # (Tk x Tk)
 
+    # switched-bypass matrices
+    n_pumps = len(pump_index)
+    Pi_telda_bypass = Pi.T[bypass_index, :] if bypass_index.size else np.zeros((0, N))
+    Pi_prime_bypass = np.eye(L)[bypass_index, :] if bypass_index.size else np.zeros((0, L))
+    Omega_bypass = np.diag(raw.link_resistance[bypass_index]) if bypass_index.size else np.zeros((0, 0))
+    S_bypass_pump = np.zeros((bypass_index.size, n_pumps))
+    for i, p in enumerate(bypass_pump_pos):
+        S_bypass_pump[i, p] = 1.0
+
     return Matrices(
         Pi=Pi, Pi_telda=Pi_telda, Pi_prime=Pi_prime, Pi_reduced=Pi_reduced,
         Lambda=Lambda, Theta=Theta, Tau=Tau, Kappa=Kappa, Omega=Omega,
         Delta=Delta, pipe_index=pipe_index,
+        bypass_index=bypass_index, Pi_telda_bypass=Pi_telda_bypass,
+        Pi_prime_bypass=Pi_prime_bypass, Omega_bypass=Omega_bypass,
+        S_bypass_pump=S_bypass_pump,
     )

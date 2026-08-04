@@ -16,6 +16,7 @@ from .validation import (
 from .warmstart import (
     candidate_schedules,
     solve_fixed_schedule,
+    solve_from_epanet,
     solve_multistart,
     solve_warmstart,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "candidate_schedules",
     "solve_multistart",
     "solve_fixed_schedule",
+    "solve_from_epanet",
     "solve_warmstart",
     "plot_all",
     "plot_convergence",

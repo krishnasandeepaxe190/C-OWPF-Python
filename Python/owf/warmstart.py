@@ -96,6 +96,28 @@ def solve_multistart(
     return results[best_name], best_name, results
 
 
+def solve_from_epanet(wdn: WDN) -> OWFResult:
+    """Reproduce EPANET's own operation: seed the linearization from EPANET's
+    computed hydraulics, fix that pump schedule, and converge the continuous
+    problem. Robust for multi-pump / switched-bypass networks (e.g. Net3) where
+    EPANET's controls already give a valid, feasible operating point.
+    """
+    flows_ep, heads_ep, _, _ = run_epanet(wdn.raw)
+    T = wdn.time
+    Fseed = flows_ep[:T].T
+    Hseed = heads_ep[:T].T
+    onoff = np.round((wdn.M.Lambda @ Fseed > 1.0).astype(float))
+    # soft bounds (EPANET may carry small negative pressures the model forbids),
+    # modest penalty growth to stay well-conditioned.
+    cfg = replace(wdn.config, fixed_schedule=onoff, soft_bounds=True, damping=1.0,
+                  penalty_weight=1.0e3, penalty_growth=1.2, penalty_max=1.0e5,
+                  max_iter=max(wdn.config.max_iter, 20), feas_tol=2.0)
+    wdn_fixed = replace(wdn, config=cfg)
+    lin = linearize(Fseed, wdn_fixed.M, wdn_fixed.pump)
+    eps = stack_eps(Hseed, Fseed, onoff)
+    return solve_owf(wdn_fixed, lin_override=lin, eps_override=eps)
+
+
 def solve_fixed_schedule(wdn: WDN, onoff: np.ndarray) -> OWFResult:
     """Pin the pump on/off schedule and converge the continuous problem.
 

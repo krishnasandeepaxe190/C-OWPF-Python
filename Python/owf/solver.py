@@ -44,6 +44,7 @@ class Model:
     s_thi: Optional[cp.Variable] = None
     s_term: Optional[cp.Variable] = None
     penalty: Optional[cp.Parameter] = None
+    Cp_bypass: Optional[cp.Parameter] = None
 
 
 @dataclass
@@ -85,6 +86,8 @@ def _build_model(wdn: WDN) -> Model:
         APrime=cp.Parameter((wdn.n_pumps, T), name="APrime"),
         BPrime=cp.Parameter((wdn.n_pumps, T), name="BPrime"),
     )
+    if wdn.M.bypass_index.size:
+        model.Cp_bypass = cp.Parameter((wdn.M.bypass_index.size, T), name="Cp_bypass")
     if wdn.config.soft_bounds:
         model.s_jlo = cp.Variable((wdn.n_junctions, T), nonneg=True, name="s_jlo")
         model.s_jhi = cp.Variable((wdn.n_junctions, T), nonneg=True, name="s_jhi")
@@ -102,6 +105,8 @@ def _set_params(model: Model, lin: LinPoint) -> None:
     model.C2M.value = lin.C2M
     model.APrime.value = lin.APrimePump
     model.BPrime.value = lin.BPrimePump
+    if model.Cp_bypass is not None:
+        model.Cp_bypass.value = lin.Cp_bypass
 
 
 def _max_slack(model: Model) -> float:
@@ -150,6 +155,10 @@ def solve_owf(
     converged = False
     n_iter = 0
     max_slack = float("nan")
+    # Best-so-far snapshot, so a late ill-conditioned solve can't lose a good
+    # earlier iterate. Ranked by (bound violation, then iterate change).
+    best = None
+    best_key = (float("inf"), float("inf"))
 
     for it in range(cfg.max_iter):
         if warmup and it == cfg.mass_balance_warmup_iters:
@@ -162,8 +171,14 @@ def solve_owf(
                 cfg.penalty_max, cfg.penalty_weight * cfg.penalty_growth ** it
             )
 
-        problem.solve(solver=cfg.solver, verbose=cfg.verbose)
-        status = problem.status
+        # A single HiGHS failure (e.g. an ill-conditioned late iterate) must not
+        # abort the whole run -- stop and fall back to the best iterate so far.
+        try:
+            problem.solve(solver=cfg.solver, verbose=cfg.verbose)
+            status = problem.status
+        except Exception as exc:  # cvxpy/solver numerical failure
+            print(f"[iter {it}] solver error ({exc}) -- stopping")
+            break
         if status not in ("optimal", "optimal_inaccurate"):
             print(f"[iter {it}] problem {status} -- stopping")
             break
@@ -172,8 +187,8 @@ def solve_owf(
         flows = np.asarray(model.Flows.value)
         onoff = np.asarray(model.OnOff.value)
         ppump = np.asarray(model.Ppump.value)
-        if soft:
-            max_slack = _max_slack(model)
+        cur_slack = _max_slack(model) if soft else 0.0
+        max_slack = cur_slack if soft else float("nan")
 
         eps = stack_eps(heads, flows, onoff)
         err = error_norm(eps, prev_eps)
@@ -182,8 +197,13 @@ def solve_owf(
         objectives.append(float(C._energy_cost(model, wdn).value))
         n_iter = it + 1
 
+        key = (round(cur_slack, 6), err)
+        if key < best_key:
+            best_key = key
+            best = (heads, flows, onoff, ppump, objectives[-1], max_slack)
+
         if cfg.verbose:
-            extra = f"  max_slack={max_slack:.4g}" if soft else ""
+            extra = f"  max_slack={cur_slack:.4g}" if soft else ""
             print(f"[iter {it}] obj={objectives[-1]:.6f}  error={err:.6f}"
                   f"  status={status}{extra}")
 
@@ -199,6 +219,11 @@ def solve_owf(
             converged = True
             break
 
+    # Fall back to the best iterate if the loop stopped without converging.
+    obj_final = objectives[-1] if objectives else float("nan")
+    if not converged and best is not None:
+        heads, flows, onoff, ppump, obj_final, max_slack = best
+
     # With soft bounds, "converged" also requires the slacks to be ~0.
     if soft and converged and max_slack > cfg.feas_tol:
         converged = False
@@ -207,7 +232,7 @@ def solve_owf(
         status=status,
         n_iter=n_iter,
         converged=converged,
-        objective=objectives[-1] if objectives else float("nan"),
+        objective=obj_final,
         heads=heads,
         flows=flows,
         onoff=onoff,

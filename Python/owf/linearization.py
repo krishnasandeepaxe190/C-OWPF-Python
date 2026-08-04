@@ -34,6 +34,7 @@ class LinPoint:
     C2M: np.ndarray         # (Pu x T)
     APrimePump: np.ndarray  # (Pu x T)
     BPrimePump: np.ndarray  # (Pu x T)
+    Cp_bypass: np.ndarray = None  # (Nb x T) head-loss lin. for switched bypasses
 
 
 def linearize(flows: np.ndarray, M: Matrices, pump: PumpParams) -> LinPoint:
@@ -51,6 +52,13 @@ def linearize(flows: np.ndarray, M: Matrices, pump: PumpParams) -> LinPoint:
     # Hazen-Williams pipe head loss linearization
     Cp = pipe_flows * (M.Omega @ np.abs(pipe_flows) ** 0.852 - np.ones_like(pipe_flows))
 
+    # same linearization for switched-bypass pipes (if any)
+    if M.bypass_index.size:
+        bp_flows = M.Pi_prime_bypass @ flows
+        Cp_bypass = bp_flows * (M.Omega_bypass @ np.abs(bp_flows) ** 0.852 - np.ones_like(bp_flows))
+    else:
+        Cp_bypass = np.zeros((0, T))
+
     # Pump head-gain curve  H_gain(f) = h0 - r f^v  (general exponent v).
     # Monomial linearization freezes the coefficient: r f^v ~ (r f_prev^(v-1)) f,
     # so the enforced gain is -(C1M + C2M f) with C1M = -h0, C2M = r f_prev^(v-1).
@@ -64,7 +72,8 @@ def linearize(flows: np.ndarray, M: Matrices, pump: PumpParams) -> LinPoint:
     APrimePump = pump_prime
     BPrimePump = pump_power - pump_prime * pump_flows
 
-    return LinPoint(Cp=Cp, C1M=C1M, C2M=C2M, APrimePump=APrimePump, BPrimePump=BPrimePump)
+    return LinPoint(Cp=Cp, C1M=C1M, C2M=C2M, APrimePump=APrimePump,
+                    BPrimePump=BPrimePump, Cp_bypass=Cp_bypass)
 
 
 def stack_eps(heads: np.ndarray, flows: np.ndarray, onoff: np.ndarray) -> np.ndarray:

@@ -33,6 +33,7 @@ class RawNetwork:
     link_pump_count: int
     link_valve_index: np.ndarray     # 0-based
     pump_coefficients: np.ndarray    # (Pu, 3) [h0, r, v] derived from EPANET curves
+    closed_pipe_index: np.ndarray    # 0-based pipes with initial status Closed
 
     # Nodes
     node_index: np.ndarray           # 0-based [0..N-1]
@@ -141,6 +142,15 @@ def read_inp(inp_path) -> RawNetwork:
     link_valve_index = (valve_raw.astype(int) - 1) if valve_raw.size else np.array([], dtype=int)
     pump_coefficients = _derive_pump_coefficients(d, link_pump_count)
 
+    # Permanently-closed pipes (EPANET initial status Closed, non-pump): they carry
+    # no flow and no Hazen-Williams head loss, so they must be excluded from the
+    # energy equation and pinned to zero flow. Pumps that start Closed are ignored
+    # here -- their state is governed by the OnOff binaries.
+    link_initial_status = np.asarray(d.getLinkInitialStatus(), dtype=float).ravel()
+    is_pump = np.zeros(len(link_name_id), dtype=bool)
+    is_pump[link_pump_index] = True
+    closed_pipe_index = np.where((link_initial_status == 0) & (~is_pump))[0]
+
     # Hazen-Williams resistance (read_inp.m). Only defined for pipes; pumps have
     # roughness/diameter 0 -> guard against divide-by-zero and set them to 0.
     n_links = len(link_name_id)
@@ -188,6 +198,7 @@ def read_inp(inp_path) -> RawNetwork:
         link_pump_count=link_pump_count,
         link_valve_index=link_valve_index,
         pump_coefficients=pump_coefficients,
+        closed_pipe_index=closed_pipe_index,
         node_index=node_index,
         junction_index=junction_index,
         reservoir_index=reservoir_index,

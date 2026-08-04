@@ -109,3 +109,37 @@ def test_ky3_not_registered():
     from owf import NETWORKS
     assert 275 not in NETWORKS
 
+
+# --------------------------------------------------------------------------
+# Net3 (net 97): 97 nodes, 2 multi-point-curve pumps, 3 tanks, 2 reservoirs,
+# a switched bypass (pipe 330 / pump 335), and a time-limited Lake pump.
+# --------------------------------------------------------------------------
+def test_net3_structure():
+    wdn = setup(SolverConfig(net_num=97))
+    assert (wdn.n_nodes, wdn.n_links) == (97, 119)
+    assert wdn.n_pumps == 2 and wdn.n_tanks == 3 and wdn.n_reservoirs == 2
+    # switched bypass resolved (pipe 330 tied to a pump), Lake pump availability set
+    assert wdn.M.bypass_index.size == 1
+    assert len(wdn.pump_avail) == 1
+    # multi-point pump curves -> non-quadratic exponents
+    assert not np.allclose(wdn.pump.v_m, 2.0)
+
+
+def test_net3_reproduces_epanet():
+    """solve_from_epanet reproduces EPANET's operation on Net3 (with the bypass)."""
+    from owf import solve_from_epanet
+    from owf.epanet_io import run_epanet
+    wdn = setup(SolverConfig(net_num=97))
+    r = solve_from_epanet(wdn)
+    assert r.flows is not None
+    T = wdn.time
+    flows_ep, heads_ep, _, _ = run_epanet(wdn.raw)
+    dh = np.abs(r.heads - heads_ep[:T].T).max()
+    dq = np.abs(r.flows - flows_ep[:T].T).max()
+    assert dh < 3.0    # ft (residual ~ EPANET's own small negative pressures)
+    assert dq < 5.0    # GPM
+    # bypass carries flow only when its pump is off
+    bp = wdn.M.Pi_prime_bypass @ r.flows
+    pump_on = (wdn.M.S_bypass_pump @ r.onoff) > 0.5
+    assert np.all(np.abs(bp[pump_on]) < 1.0)
+

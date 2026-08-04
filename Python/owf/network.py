@@ -51,6 +51,7 @@ class WDN:
     lin0: LinPoint                     # initial linearization coefficients
     int_eps: np.ndarray                # initial stacked iterate [H;Q;OnOff]
     int_onoff: np.ndarray              # (Pu x T)
+    pump_avail: dict = None            # pump_pos -> (start_hour, end_hour) availability
 
     # convenient sizes
     @property
@@ -139,11 +140,46 @@ def _price(config: SolverConfig, time: int) -> np.ndarray:
     return np.ones(time)
 
 
+def _resolve_bypasses(raw: RawNetwork, spec: cfg.NetworkSpec):
+    """Map spec.bypasses {bypass_id: pump_id} to link indices + pump positions."""
+    if not spec.bypasses:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    names = list(raw.link_name_id)
+    bidx, ppos = [], []
+    for bid, pid in spec.bypasses.items():
+        b = names.index(str(bid))
+        p_link = names.index(str(pid))
+        pos = int(np.where(raw.link_pump_index == p_link)[0][0])
+        bidx.append(b)
+        ppos.append(pos)
+    return np.array(bidx, dtype=int), np.array(ppos, dtype=int)
+
+
+def _resolve_availability(raw: RawNetwork, spec: cfg.NetworkSpec) -> dict:
+    """Map spec.pump_availability {pump_id: (start,end)} to {pump_pos: (start,end)}."""
+    if not spec.pump_availability:
+        return {}
+    names = list(raw.link_name_id)
+    out = {}
+    for pid, window in spec.pump_availability.items():
+        p_link = names.index(str(pid))
+        pos = int(np.where(raw.link_pump_index == p_link)[0][0])
+        out[pos] = tuple(window)
+    return out
+
+
 def setup(config: SolverConfig) -> WDN:
     """Build the full WDN problem data for the given configuration."""
     spec = config.spec
     raw = read_inp(spec.inp_path)
-    M = build_matrices(raw)
+
+    # switched bypasses: resolve, and drop them from the permanently-closed set
+    bypass_index, bypass_pump_pos = _resolve_bypasses(raw, spec)
+    if bypass_index.size:
+        raw.closed_pipe_index = np.setdiff1d(raw.closed_pipe_index, bypass_index)
+    pump_avail = _resolve_availability(raw, spec)
+
+    M = build_matrices(raw, bypass_index, bypass_pump_pos)
 
     # One EPANET run supplies the demand profile and the choice=1 initial point.
     flows_ep, heads_ep, _, demand_ep = run_epanet(raw)
@@ -158,6 +194,16 @@ def setup(config: SolverConfig) -> WDN:
     bounds = _bounds(raw, tank, time)
     price_final = _price(config, time)
 
+    # Auto-scale Big-M to the network if not overridden: comfortably larger than
+    # the max head difference and the actual operating flows, but not so large it
+    # ill-conditions HiGHS (Net3's ~300 ft heads can't share a 1e7 Big-M with
+    # 1e-5 resistances). Uses EPANET operating flows, not the pump's theoretical
+    # shutoff-based max flow, which can be an order of magnitude larger.
+    if config.big_m is None:
+        head_span = float(bounds.max_nodal_heads.max() - raw.node_elevations.min())
+        flow_span = float(np.abs(flows_ep[:time]).max()) if time else 0.0
+        config.big_m = max(1.0e4, 20.0 * head_span, 5.0 * flow_span)
+
     # Junction demand from EPANET's computed time series: (steps x N) -> (J x T).
     junction_demand_profile = demand_ep[:time, raw.junction_index].T
 
@@ -169,5 +215,5 @@ def setup(config: SolverConfig) -> WDN:
         config=config, spec=spec, raw=raw, M=M, pump=pump,
         tank=tank, bounds=bounds, time=time, price_final=price_final,
         junction_demand_profile=junction_demand_profile, lin0=lin0,
-        int_eps=int_eps, int_onoff=int_onoff,
+        int_eps=int_eps, int_onoff=int_onoff, pump_avail=pump_avail,
     )

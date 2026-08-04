@@ -37,6 +37,13 @@ class NetworkSpec:
     name: str
     inp_relpath: str  # relative to DATA_DIR
     pump_coefficients: Optional[List[List[float]]] = None
+    # Switched bypass pipes: {bypass_pipe_id: pump_id}. The bypass is OPEN (carries
+    # gravity flow, obeys head loss) exactly when its pump is OFF, and CLOSED
+    # (zero flow) when the pump is ON -- e.g. Net3's pipe 330 / pump 335.
+    bypasses: Optional[dict] = None
+    # Source-availability windows: {pump_id: (start_hour, end_hour)} -- the pump may
+    # only run for hours in [start, end) (e.g. Net3's Lake pump 10, hours 1..14).
+    pump_availability: Optional[dict] = None
 
     @property
     def inp_path(self) -> Path:
@@ -69,6 +76,13 @@ NETWORKS: dict[int, NetworkSpec] = {
         name="net2",
         inp_relpath="net2/epanet2_modified.inp",
     ),
+    97: NetworkSpec(
+        net_num=97,
+        name="net3",
+        inp_relpath="net3/Net3.inp",
+        bypasses={"330": "335"},          # bypass pipe 330 opens when pump 335 is off
+        pump_availability={"10": (1, 15)},  # Lake pump 10 available hours 1..14
+    ),
     # KY3 (275 nodes / 371 links, 5 pumps, 3 reservoirs, 3 tanks) is archived under
     # data/archive/ky3/. Its pumps carry no EPANET head curve, so it needs explicit
     # [h0, r, v] coefficients before it can be registered here.
@@ -92,7 +106,10 @@ class SolverConfig:
     choice: int = 1                  # 1 = initialize from EPANET, 0 = user-defined
     tol: float = 0.5                 # convergence tolerance on ||[H;Q;OnOff]|| change
     max_iter: int = 50               # MATLAB used inf; a finite cap is safer
-    big_m: float = 10e06             # Big-M for pump on/off head-gain constraints
+    # Big-M for pump/bypass on/off constraints. None -> auto-scale to the network
+    # (large enough to relax head-difference and flow constraints, small enough to
+    # keep HiGHS well-conditioned). Set a number to override.
+    big_m: Optional[float] = None
     # MATLAB quirk: mass balance is disabled for the first 10 iterations. Off by
     # default here (physically-correct: always enforce mass balance).
     mass_balance_warmup: bool = False
