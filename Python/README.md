@@ -14,7 +14,8 @@ objective and constraints with binary pump on/off variables — solved with
 ```bash
 pip install -r requirements.txt
 
-streamlit run app.py          # WEB UI: case setup, run, plots, session comparison
+streamlit run app.py          # WEB UI: case setup, interactive network map,
+                              # plots, case diff, CSV downloads, session table
 
 python main_owf.py            # INTERACTIVE: pick network, get a recommended mode,
                               # run, plot, and print the comparison table
@@ -50,6 +51,21 @@ driver prints an aggregate session table across the cases you ran.
 The EPANET series in the flow/head plots come from the **schedule-imposed**
 re-simulation, so overlapping curves mean the linearized solution reproduces the
 true nonlinear hydraulics.
+
+## Web UI (`streamlit run app.py`)
+
+- **Case setup** with per-network recommended modes and honest warnings
+- **Interactive network map** (Plotly): topology colored by element type
+  (junction / tank / reservoir / pipe / pump / bypass / closed), junction nodes
+  colored by pressure with an **hour slider**, hover tooltips with per-element
+  heads and flows
+- **Tabbed results**: map, schedule, flows, heads, convergence, error, solver log
+- **Case diff**: pick any two runs — metric table with Δ column and side-by-side
+  pump-schedule plots
+- **Downloads**: per-case CSVs (flows, heads, pump schedule, pump power) and the
+  session comparison table
+- Every run in a session accumulates into the comparison table; plots are stored
+  per-run so reruns never overwrite earlier cases
 
 ## Network status
 

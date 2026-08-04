@@ -41,6 +41,9 @@ class RawNetwork:
     reservoir_index: np.ndarray      # 0-based
     tank_index: np.ndarray           # 0-based
     node_elevations: np.ndarray      # ft
+    node_name_id: list               # EPANET node ids (strings)
+    node_x: np.ndarray               # map coordinates (0 where absent)
+    node_y: np.ndarray
 
     # Connectivity: for each link, (from_node, to_node) as 0-based indices
     from_node: np.ndarray
@@ -128,6 +131,14 @@ def read_inp(inp_path) -> RawNetwork:
     reservoir_index = np.asarray(d.getNodeReservoirIndex(), dtype=int) - 1
     tank_index = np.asarray(d.getNodeTankIndex(), dtype=int) - 1
     node_elevations = np.asarray(d.getNodeElevations(), dtype=float)
+    node_name_id = list(d.getNodeNameID())
+    try:
+        coords = d.getNodeCoordinates()
+        node_x = np.array([coords["x"][i + 1] for i in range(len(node_index))], dtype=float)
+        node_y = np.array([coords["y"][i + 1] for i in range(len(node_index))], dtype=float)
+    except Exception:  # networks without a [COORDINATES] section
+        node_x = np.zeros(len(node_index))
+        node_y = np.zeros(len(node_index))
 
     # --- links ---
     link_name_id = list(d.getLinkNameID())
@@ -204,6 +215,9 @@ def read_inp(inp_path) -> RawNetwork:
         reservoir_index=reservoir_index,
         tank_index=tank_index,
         node_elevations=node_elevations,
+        node_name_id=node_name_id,
+        node_x=node_x,
+        node_y=node_y,
         from_node=from_node,
         to_node=to_node,
         tank_diameter=tank_diameter,
