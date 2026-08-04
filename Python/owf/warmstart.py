@@ -43,8 +43,13 @@ def candidate_schedules(wdn: WDN) -> dict[str, np.ndarray]:
 def warmstart_point(wdn: WDN, onoff: np.ndarray):
     """Linearization point + stacked iterate from EPANET flows under ``onoff``."""
     pump_links = (wdn.raw.link_pump_index + 1).tolist()
+    bypass_links = [
+        (int(lk) + 1, int(np.argmax(wdn.M.S_bypass_pump[i])))
+        for i, lk in enumerate(wdn.M.bypass_index)
+    ]
     heads, flows = simulate_with_schedule(
-        wdn.spec.inp_path, pump_links, onoff, wdn.time, wdn.n_nodes, wdn.n_links
+        wdn.spec.inp_path, pump_links, onoff, wdn.time, wdn.n_nodes, wdn.n_links,
+        bypass_links=bypass_links,
     )
     lin = linearize(flows, wdn.M, wdn.pump)
     eps = stack_eps(heads, flows, onoff)
@@ -94,6 +99,204 @@ def solve_multistart(
 
     best_name = min(results, key=lambda k: _score(results[k]))
     return results[best_name], best_name, results
+
+
+def true_energy_cost(wdn: WDN, flows: np.ndarray) -> float:
+    """Energy cost using the TRUE nonlinear FSP power (not the linearized model).
+
+    This is the honest basis for comparing two schedules -- the per-iteration
+    objective uses linearized power, which differs slightly between linearization
+    points.
+    """
+    if flows is None:
+        return float("inf")
+    q = wdn.M.Lambda @ flows[:, : wdn.time]
+    p = wdn.pump
+    power = p.c_m * (p.h0[:, None] - p.r_m[:, None] * np.abs(q) ** p.v_m[:, None]) * q
+    return float(wdn.price_final @ (power.sum(axis=0) / 1000.0))
+
+
+def _converge_fixed(wdn: WDN, onoff: np.ndarray, seed_flows: np.ndarray,
+                    seed_heads: np.ndarray, max_iter: int = 20) -> OWFResult:
+    """Fix a schedule and converge the continuous problem from a given seed."""
+    cfg = replace(wdn.config, fixed_schedule=np.round(onoff), soft_bounds=True,
+                  damping=1.0, penalty_weight=1.0e3, penalty_growth=1.2,
+                  penalty_max=1.0e5, max_iter=max_iter, feas_tol=2.0)
+    wdn_fixed = replace(wdn, config=cfg)
+    lin = linearize(seed_flows, wdn_fixed.M, wdn_fixed.pump)
+    eps = stack_eps(seed_heads, seed_flows, np.round(onoff))
+    return solve_owf(wdn_fixed, lin_override=lin, eps_override=eps)
+
+
+def _apply_availability(wdn: WDN, sched: np.ndarray) -> np.ndarray:
+    """Zero out hours where a pump's source is unavailable."""
+    sched = np.array(sched, dtype=float)
+    for pos, (start, end) in (wdn.pump_avail or {}).items():
+        for t in range(wdn.time):
+            if not (start <= t < end):
+                sched[pos, t] = 0.0
+    return sched
+
+
+def price_threshold_schedules(wdn: WDN) -> dict[str, np.ndarray]:
+    """Candidate schedules that run pumps only during the cheapest hours.
+
+    A family of price quantiles (plus all-on) -- physically motivated for
+    time-of-use pricing and cheap to enumerate.
+    """
+    T, P = wdn.time, wdn.n_pumps
+    price = np.asarray(wdn.price_final, dtype=float)
+    out: dict[str, np.ndarray] = {"all_on": np.ones((P, T))}
+    for q in (0.25, 0.4, 0.5, 0.6, 0.75, 0.9):
+        thresh = np.quantile(price, q)
+        out[f"cheapest_{int(q * 100)}pct"] = np.tile(
+            (price <= thresh).astype(float), (P, 1)
+        )
+    return out
+
+
+def optimize_schedule(
+    wdn: WDN,
+    inner_iter: int = 15,
+    feas_tol: float = 2.0,
+    polish: bool = True,
+    max_flips: int = 30,
+    verbose: bool = True,
+) -> tuple[OWFResult, dict]:
+    """Optimize the pump on/off schedule and report savings vs EPANET.
+
+    Each candidate schedule is evaluated **honestly**: fix it, converge the
+    continuous hydraulics, and score the TRUE (nonlinear) energy cost plus the
+    head-bound violation. We do not let the frozen linearization *predict* a
+    distant schedule's quality -- that is what makes a single free-binary MILP
+    return the incumbent (its coefficients simply don't apply far away).
+
+    Stages:
+      1. **Baseline** -- EPANET's own operation.
+      2. **Candidates** -- price-quantile schedules (run only during the cheapest
+         hours), all-on, and a MILP proposal at the incumbent's linearization.
+      3. **Polish** (optional) -- 1-opt: flip single pump-hours of the winner and
+         keep any flip that lowers cost, giving a schedule that is locally optimal
+         w.r.t. single-hour changes.
+
+    Ranking: feasible (slack <= feas_tol) first, then lowest true cost.
+
+    Returns (best result, info dict with baseline/best cost, savings and trace).
+    """
+    def evaluate(name, sched, seed_flows=None, seed_heads=None):
+        sched = _apply_availability(wdn, np.round(sched))
+        if seed_flows is None:
+            seed_flows, seed_heads = base.flows, base.heads
+        r = _converge_fixed(wdn, sched, seed_flows, seed_heads, inner_iter)
+        if r.flows is None:
+            return None, float("inf"), float("inf")
+        return r, true_energy_cost(wdn, r.flows), float(r.max_slack)
+
+    def rank(cost, slack):
+        return (0 if slack <= feas_tol else 1, round(slack, 3) if slack > feas_tol else 0.0, cost)
+
+    base = solve_from_epanet(wdn)
+    if base.flows is None:
+        raise RuntimeError("EPANET baseline solve failed")
+    baseline_cost = true_energy_cost(wdn, base.flows)
+    baseline_slack = float(base.max_slack)
+
+    best, best_cost, best_slack = base, baseline_cost, baseline_slack
+    best_sched = _apply_availability(wdn, np.round(base.onoff))
+    best_key = rank(best_cost, best_slack)
+    trace = [("epanet", baseline_cost, baseline_slack)]
+    if verbose:
+        print(f"[opt] baseline (EPANET): cost={baseline_cost:.5f} slack={baseline_slack:.3f}")
+
+    # --- stage 2: candidate schedules -------------------------------------
+    candidates = price_threshold_schedules(wdn)
+    seen = {best_sched.tobytes()}
+    for name, sched in candidates.items():
+        s = _apply_availability(wdn, np.round(sched))
+        if s.tobytes() in seen:
+            continue
+        seen.add(s.tobytes())
+        r, cost, slack = evaluate(name, s)
+        trace.append((name, cost, slack))
+        key = rank(cost, slack)
+        better = key < best_key
+        if verbose:
+            print(f"[opt] {name:16s} cost={cost:.5f} slack={slack:.3f} "
+                  f"{'ACCEPT' if better else ''}")
+        if better and r is not None:
+            best, best_cost, best_slack, best_sched, best_key = r, cost, slack, s, key
+
+    # MILP proposal at the incumbent's linearization (cheap; sometimes helps)
+    try:
+        lin = linearize(best.flows, wdn.M, wdn.pump)
+        cfg = replace(wdn.config, fixed_schedule=None, soft_bounds=True, damping=1.0,
+                      penalty_weight=1.0e3, penalty_growth=1.0, penalty_max=1.0e4,
+                      max_iter=1, feas_tol=feas_tol)
+        milp = solve_owf(replace(wdn, config=cfg), lin_override=lin,
+                         eps_override=stack_eps(best.heads, best.flows, best_sched))
+        if milp.onoff is not None:
+            s = _apply_availability(wdn, np.round(milp.onoff))
+            if s.tobytes() not in seen:
+                seen.add(s.tobytes())
+                r, cost, slack = evaluate("milp", s, milp.flows, milp.heads)
+                trace.append(("milp", cost, slack))
+                key = rank(cost, slack)
+                if verbose:
+                    print(f"[opt] {'milp':16s} cost={cost:.5f} slack={slack:.3f} "
+                          f"{'ACCEPT' if key < best_key else ''}")
+                if key < best_key and r is not None:
+                    best, best_cost, best_slack, best_sched, best_key = r, cost, slack, s, key
+    except Exception as exc:
+        if verbose:
+            print(f"[opt] milp proposal skipped: {exc}")
+
+    # --- stage 3: 1-opt polish --------------------------------------------
+    n_flips = 0
+    if polish:
+        improved = True
+        while improved and n_flips < max_flips:
+            improved = False
+            order = sorted(range(wdn.time), key=lambda t: -wdn.price_final[t])
+            for p in range(wdn.n_pumps):
+                for t in order:
+                    if n_flips >= max_flips:
+                        break
+                    avail = wdn.pump_avail or {}
+                    if p in avail:
+                        start, end = avail[p]
+                        if not (start <= t < end):
+                            continue
+                    s = best_sched.copy()
+                    s[p, t] = 1.0 - s[p, t]
+                    if s.tobytes() in seen:
+                        continue
+                    seen.add(s.tobytes())
+                    n_flips += 1
+                    r, cost, slack = evaluate(f"flip_p{p}_t{t}", s)
+                    key = rank(cost, slack)
+                    if key < best_key and r is not None:
+                        if verbose:
+                            print(f"[opt] polish flip pump{p} hour{t}: "
+                                  f"cost={cost:.5f} slack={slack:.3f} ACCEPT")
+                        best, best_cost, best_slack, best_sched, best_key = r, cost, slack, s, key
+                        trace.append((f"flip_p{p}_t{t}", cost, slack))
+                        improved = True
+                        break
+                if improved:
+                    break
+
+    info = {
+        "baseline_cost": baseline_cost,
+        "baseline_slack": baseline_slack,
+        "best_cost": best_cost,
+        "best_slack": best_slack,
+        "savings_pct": (100.0 * (baseline_cost - best_cost) / baseline_cost
+                        if baseline_cost else 0.0),
+        "trace": trace,
+        "schedule": best_sched,
+        "n_flips": n_flips,
+    }
+    return best, info
 
 
 def solve_from_epanet(wdn: WDN) -> OWFResult:

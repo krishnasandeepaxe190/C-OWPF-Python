@@ -69,8 +69,9 @@ def _build_model(wdn: WDN) -> Model:
     # pinned (turns the per-iteration problem into a continuous LP -- used by the
     # multi-start warm-start's convergence phase).
     if wdn.config.fixed_schedule is not None:
-        onoff = cp.Parameter((wdn.n_pumps, T), name="OnOff",
-                             value=np.asarray(wdn.config.fixed_schedule, dtype=float))
+        # A plain array (not a Parameter): keeps products like BPrime*OnOff
+        # DPP-compliant so CVXPY caches the compilation across iterations.
+        onoff = np.asarray(wdn.config.fixed_schedule, dtype=float)
     else:
         onoff = cp.Variable((wdn.n_pumps, T), boolean=True, name="OnOff")
     model = Model(
@@ -173,11 +174,20 @@ def solve_owf(
 
         # A single HiGHS failure (e.g. an ill-conditioned late iterate) must not
         # abort the whole run -- stop and fall back to the best iterate so far.
-        try:
-            problem.solve(solver=cfg.solver, verbose=cfg.verbose)
-            status = problem.status
-        except Exception as exc:  # cvxpy/solver numerical failure
-            print(f"[iter {it}] solver error ({exc}) -- stopping")
+        status = None
+        for solver_name in (cfg.solver, *cfg.fallback_solvers):
+            try:
+                problem.solve(solver=solver_name, verbose=cfg.verbose)
+                status = problem.status
+            except Exception as exc:  # numerical failure -- try the next solver
+                if cfg.verbose:
+                    print(f"[iter {it}] solver {solver_name} error ({exc})")
+                status = None
+                continue
+            if status in ("optimal", "optimal_inaccurate"):
+                break
+        if status is None:
+            print(f"[iter {it}] all solvers failed -- stopping")
             break
         if status not in ("optimal", "optimal_inaccurate"):
             print(f"[iter {it}] problem {status} -- stopping")
@@ -185,7 +195,8 @@ def solve_owf(
 
         heads = np.asarray(model.Heads.value)
         flows = np.asarray(model.Flows.value)
-        onoff = np.asarray(model.OnOff.value)
+        onoff = np.asarray(model.OnOff.value if hasattr(model.OnOff, "value")
+                           else model.OnOff)
         ppump = np.asarray(model.Ppump.value)
         cur_slack = _max_slack(model) if soft else 0.0
         max_slack = cur_slack if soft else float("nan")

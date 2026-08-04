@@ -22,6 +22,9 @@ Python/results/
 *.rpt
 *.bin
 
+# Source archives (extracted into data/)
+*.zip
+
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -97,8 +97,15 @@ def validate_schedule(wdn: WDN, result: OWFResult) -> ScheduleValidationReport:
     """
     T = wdn.time
     pump_links = (wdn.raw.link_pump_index + 1).tolist()  # EPANET 1-based
+    # switched bypasses must be driven too, else deleting the controls leaves them
+    # stuck at their initial status (Net3's pipe 330).
+    bypass_links = [
+        (int(lk) + 1, int(np.argmax(wdn.M.S_bypass_pump[i])))
+        for i, lk in enumerate(wdn.M.bypass_index)
+    ]
     heads_ep, flows_ep = simulate_with_schedule(
-        wdn.spec.inp_path, pump_links, result.onoff, T, wdn.n_nodes, wdn.n_links
+        wdn.spec.inp_path, pump_links, result.onoff, T, wdn.n_nodes, wdn.n_links,
+        bypass_links=bypass_links,
     )
 
     dh = heads_ep - result.heads[:, :T]

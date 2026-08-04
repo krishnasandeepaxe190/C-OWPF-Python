@@ -128,6 +128,9 @@ class SolverConfig:
     penalty_max: float = 1.0e7
     feas_tol: float = 1.0e-3   # max slack accepted as "feasible" when soft_bounds
     solver: str = "HIGHS"
+    # Tried in order if the primary solver fails numerically on an iterate.
+    # SCIP handles some ill-conditioned MILPs that HiGHS reports as UNKNOWN.
+    fallback_solvers: tuple = ("SCIP",)
     verbose: bool = False
     data_dir: Path = field(default=DATA_DIR)
 

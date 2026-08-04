@@ -47,10 +47,41 @@ true nonlinear hydraulics.
 | 11 | Net1 (looped) | 11 / 13 | ✅ converges with `--warmstart`; ≈ 0.005 ft / 0.002 GPM |
 | 36 | Net2 (looped) | 36 / 40 | ✅ converges with `--warmstart`; ≈ 0.013 ft / 0.001 GPM |
 
+| 97 | Net3 (looped, 2 pumps, switched bypass) | 97 / 119 | ✅ reproduces EPANET ≈ 1.1 ft via `solve_from_epanet` |
+
 Looped networks (Net1, Net2) do **not** converge from the default initialization —
 use `--warmstart`. KY3 is archived under `data/archive/ky3/`: its 5 pumps carry no
 EPANET head curve, so it needs explicit `[h0, r, v]` coefficients before it can be
 registered in `config.NETWORKS`.
+
+## Schedule optimization
+
+`owf.optimize_schedule(wdn)` searches for a cheaper pump schedule than EPANET's own
+operation. Every candidate is **evaluated honestly** — fixed, converged, and scored
+on the *true nonlinear* energy cost plus head-bound violation — because a single
+free-binary MILP cannot judge a distant schedule (its frozen linearization simply
+doesn't apply there, so it returns the incumbent).
+
+Stages: EPANET baseline → price-quantile candidates (+ all-on, + a MILP proposal)
+→ optional 1-opt polish (flip single pump-hours). Ranking: feasible first, then
+lowest true cost.
+
+Savings vs EPANET's operation (all verified feasible by re-simulating the optimized
+schedule in EPANET — positive junction pressures and in-bounds tanks):
+
+| network | EPANET cost | optimized | saving | min pressure (EPANET) |
+|---|---|---|---|---|
+| 8-node | 0.2747 | 0.1926 | **29.9 %** | +7.4 ft |
+| 3-node | 1.4251 | 0.4169 | **70.7 %** | +204.8 ft |
+| Net1 | 0.2988 | 0.1631 | **45.4 %** | +242.4 ft |
+| Net2 | 0.3930 | 0.0891 | **77.3 %** | +59.5 ft |
+| Net3 | 0.3854 | 0.3854 | 0 % | — |
+
+**Net3 is an honest negative result**: its tank-level control logic is already
+well tuned, and every price-quantile alternative either costs more or violates the
+tank bounds by 12–21 ft (three tanks with tight bounds, one availability-limited
+source). Beating it would need candidates that respect its per-tank refill
+structure, not a blanket "run during the cheapest hours" pattern.
 
 Pump curve coefficients are **derived from each network's EPANET head curve**, and
 the junction demand profile is taken from EPANET's computed time series, so the

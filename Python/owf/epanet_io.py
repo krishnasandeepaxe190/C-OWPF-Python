@@ -218,7 +218,7 @@ def read_inp(inp_path) -> RawNetwork:
 
 def simulate_with_schedule(
     inp_path, pump_links_1based, onoff: np.ndarray, time: int,
-    n_nodes: int, n_links: int,
+    n_nodes: int, n_links: int, bypass_links=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Impose a pump on/off schedule in EPANET and return the true hydraulics.
 
@@ -226,6 +226,11 @@ def simulate_with_schedule(
     ``onoff`` (Pu x T), runs the extended-period simulation, and returns
     (heads, flows) shaped (N x time), (L x time) sampled at hour boundaries.
     Shared by the schedule-imposed validation and the EPANET warm-start.
+
+    ``bypass_links`` is an optional list of ``(link_1based, pump_pos)`` pairs for
+    switched bypasses: each is opened exactly when its pump is off. Without this,
+    deleting the controls would leave a bypass stuck at its initial status and the
+    simulation would be meaningless (e.g. Net3's pipe 330).
     """
     from epyt import epanet
 
@@ -248,6 +253,9 @@ def simulate_with_schedule(
         idx = min(int(round(t_cur / 3600.0)), time - 1)
         for p, lk in enumerate(pump_links_1based):
             d.setLinkStatus(lk, 1 if onoff[p, idx] > 0.5 else 0)
+        for lk, p in (bypass_links or []):
+            # bypass open exactly when its pump is off
+            d.setLinkStatus(lk, 0 if onoff[p, idx] > 0.5 else 1)
         t = int(d.runHydraulicAnalysis())
         rows[t] = (np.asarray(d.getNodeHydraulicHead()),
                    np.asarray(d.getLinkFlows()))

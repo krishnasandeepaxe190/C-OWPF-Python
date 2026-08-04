@@ -93,7 +93,9 @@ def switched_bypasses(model, wdn):
 def pump_availability(model, wdn):
     """Force pumps off outside their source-availability window."""
     cons = []
-    if not wdn.pump_avail:
+    # No-op when the schedule is fixed (a plain array, not a CVXPY variable) --
+    # availability is then enforced by whoever produced the schedule.
+    if not wdn.pump_avail or not isinstance(model.OnOff, cp.expressions.expression.Expression):
         return cons
     T = wdn.time
     for pos, (start, end) in wdn.pump_avail.items():

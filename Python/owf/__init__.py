@@ -15,10 +15,12 @@ from .validation import (
 )
 from .warmstart import (
     candidate_schedules,
+    optimize_schedule,
     solve_fixed_schedule,
     solve_from_epanet,
     solve_multistart,
     solve_warmstart,
+    true_energy_cost,
 )
 
 # plots imports matplotlib lazily inside its functions, but the module itself is
@@ -46,6 +48,8 @@ __all__ = [
     "solve_fixed_schedule",
     "solve_from_epanet",
     "solve_warmstart",
+    "optimize_schedule",
+    "true_energy_cost",
     "plot_all",
     "plot_convergence",
     "plot_flows",
