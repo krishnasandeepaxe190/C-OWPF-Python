@@ -1,85 +1,303 @@
-"""Entry point for the FSP OWF solver (ports Main_OWF_IEEE_ACCESS.m).
+"""Entry point for the FSP Optimal Water Flow (OWF) solver.
 
-Usage:
-    python main_owf.py                 # 8-node, time-of-use price, EPANET init
-    python main_owf.py --net 8 --price 1 --choice 1 --time 12 --verbose
+Run with no arguments for the **interactive** driver: it asks for the network,
+suggests the right solve mode, constructs the case, runs it, writes plots and
+prints an EPANET-vs-C-OWPF comparison table (plus an aggregate table when you
+run several cases in one session).
+
+    python main_owf.py
+
+Or run non-interactively with flags:
+
+    python main_owf.py --net 8                       # auto mode, no plots
+    python main_owf.py --net 36 --mode optimize --plot
+    python main_owf.py --net 97 --mode epanet --plot
 """
 from __future__ import annotations
 
 import argparse
+import sys
 import time as _time
+import warnings
+from dataclasses import dataclass, field
+from typing import Optional
 
-from owf import SolverConfig, setup, solve_owf, solve_warmstart, validate, validate_schedule
+import numpy as np
+
+from owf import (
+    NETWORKS,
+    SolverConfig,
+    setup,
+    solve_owf,
+    validate_schedule,
+)
+from owf.warmstart import (
+    optimize_schedule,
+    solve_from_epanet,
+    solve_warmstart,
+    true_energy_cost,
+)
+
+warnings.filterwarnings("ignore")
+
+# ---------------------------------------------------------------------------
+# Modes and per-network recommendations
+# ---------------------------------------------------------------------------
+MODES = {
+    "direct": "plain successive linearization, free pump binaries "
+              "(fast; tree networks only)",
+    "warmstart": "EPANET multi-start warm-start, then fix the best schedule "
+                 "(reliable on looped networks)",
+    "epanet": "reproduce EPANET's own rule-based operation "
+              "(validation / baseline; the only reliable mode for Net3)",
+    "optimize": "search for the cheapest feasible pump schedule and report "
+                "savings vs EPANET (slowest, most informative)",
+}
+
+# (recommended, alternative worth trying)
+MODE_SUGGESTION = {
+    8: ("direct", "optimize"),
+    3: ("direct", "optimize"),
+    11: ("warmstart", "optimize"),
+    36: ("warmstart", "optimize"),
+    97: ("epanet", "optimize"),
+}
+
+NET_BLURB = {
+    8: "8-node tutorial -- tree, 1 pump, 1 tank",
+    3: "3-node -- tree, 1 pump, 1 tank",
+    11: "Net1 -- looped, 1 pump, 1 tank",
+    36: "Net2 -- looped, 1 pump, 1 tank",
+    97: "Net3 -- looped, 2 pumps, 3 tanks, switched bypass",
+}
 
 
-def parse_args():
-    p = argparse.ArgumentParser(description="FSP Optimal Water Flow (OWF) solver")
-    p.add_argument("--net", type=int, default=8, help="network number (8 = 8-node)")
-    p.add_argument("--price", type=int, default=1, choices=[0, 1],
-                   help="1 = time-of-use price, 0 = flat")
-    p.add_argument("--choice", type=int, default=1, choices=[0, 1],
-                   help="1 = init from EPANET, 0 = user-defined")
-    p.add_argument("--time", type=int, default=None,
-                   help="horizon (default: EPANET pattern length)")
-    p.add_argument("--tol", type=float, default=0.5, help="convergence tolerance")
-    p.add_argument("--max-iter", type=int, default=50)
-    p.add_argument("--warmstart", action="store_true",
-                   help="EPANET multi-start warm-start (for hard/looped nets like Net1)")
-    p.add_argument("--plot", action="store_true",
-                   help="write convergence / flow / head / schedule plots")
-    p.add_argument("--outdir", default="outputs", help="directory for --plot output")
-    p.add_argument("--verbose", action="store_true")
-    a = p.parse_args()
-    config = SolverConfig(
-        net_num=a.net, price_choice=a.price, choice=a.choice, time=a.time,
-        tol=a.tol, max_iter=a.max_iter, verbose=a.verbose,
-    )
-    if a.warmstart:
-        # sensible warm-start defaults: soft bounds + damping for the phase-1 search
-        config.soft_bounds = True
-        config.damping = 0.6
-        config.penalty_weight = 1.0e3
-        config.penalty_growth = 1.5
-        config.max_iter = max(config.max_iter, 80)
-        config.feas_tol = 0.5
-    return config, a
+def _warmstart_config(net: int, price: int, horizon) -> SolverConfig:
+    return SolverConfig(net_num=net, price_choice=price, time=horizon,
+                        soft_bounds=True, damping=0.6, penalty_weight=1e3,
+                        penalty_growth=1.5, max_iter=60, feas_tol=0.5)
 
 
-def main() -> None:
-    config, args = parse_args()
-    print(f"Building WDN (net={config.net_num}) ...")
-    wdn = setup(config)
-    print(f"  nodes={wdn.n_nodes}  links={wdn.n_links}  pumps={wdn.n_pumps}  "
-          f"tanks={wdn.n_tanks}  reservoirs={wdn.n_reservoirs}  time={wdn.time}")
+# ---------------------------------------------------------------------------
+# Case runner
+# ---------------------------------------------------------------------------
+@dataclass
+class CaseResult:
+    label: str
+    net_num: int
+    mode: str
+    price: str
+    horizon: int
+    elapsed: float
+    converged: bool
+    n_iter: int
+    epanet_cost: float = float("nan")   # cost of EPANET's own operation
+    owf_cost: float = float("nan")      # true nonlinear cost of the C-OWPF result
+    savings_pct: float = float("nan")
+    max_dhead: float = float("nan")     # schedule-imposed EPANET replay errors
+    max_dpumpflow: float = float("nan")
+    min_pressure: float = float("nan")  # min junction pressure in the EPANET replay
+    note: str = ""
+    plots: list = field(default_factory=list)
 
+
+def run_case(net: int, mode: str, price: int, horizon, plot: bool,
+             outdir: str, verbose: bool) -> tuple[Optional[CaseResult], object, object]:
+    """Construct and solve one case; returns (CaseResult, wdn, result)."""
+    label = f"{NETWORKS[net].name}/{mode}/{'TOU' if price == 1 else 'flat'}"
+    print(f"\n=== case: {label} ===")
     t0 = _time.time()
-    if args.warmstart:
-        result, sched_name = solve_warmstart(wdn, verbose=config.verbose)
-        print(f"  warm-start schedule: {sched_name}")
+
+    if mode in ("warmstart",):
+        wdn = setup(_warmstart_config(net, price, horizon))
     else:
+        wdn = setup(SolverConfig(net_num=net, price_choice=price, time=horizon,
+                                 verbose=verbose))
+    print(f"  network: nodes={wdn.n_nodes} links={wdn.n_links} pumps={wdn.n_pumps} "
+          f"tanks={wdn.n_tanks} horizon={wdn.time}h")
+
+    # EPANET's own operation is the comparison baseline for every mode.
+    from owf.epanet_io import run_epanet
+    flows_ep, _, _, _ = run_epanet(wdn.raw)
+    epanet_cost = true_energy_cost(wdn, flows_ep[: wdn.time].T)
+
+    note = ""
+    if mode == "direct":
         result = solve_owf(wdn)
+    elif mode == "warmstart":
+        result, sched_name = solve_warmstart(wdn, verbose=verbose)
+        note = f"schedule={sched_name}"
+    elif mode == "epanet":
+        result = solve_from_epanet(wdn)
+        note = "EPANET's schedule reproduced"
+        # "converged" here means the model reproduces EPANET within tolerance
+        if result.flows is not None and np.isfinite(result.max_slack):
+            result.converged = bool(result.max_slack <= 2.0)
+    elif mode == "optimize":
+        result, info = optimize_schedule(wdn, verbose=verbose)
+        epanet_cost = info["baseline_cost"]
+        note = f"searched {len(info['trace'])} schedules, {info['n_flips']} polish flips"
+        # for optimize mode, "converged" means the winning schedule is feasible
+        result.converged = bool(info["best_slack"] <= 2.0)
+    else:
+        raise ValueError(f"unknown mode {mode!r}")
     elapsed = _time.time() - t0
 
-    print(f"\nSolve finished: status={result.status}  iterations={result.n_iter}  "
-          f"converged={result.converged}  ({elapsed:.2f}s)")
     if result.flows is None:
-        print(f"Objective (energy cost): n/a  (solver status: {result.status})")
-        print("No feasible solution -- skipping EPANET validation.")
-        return
-    print(f"Objective (energy cost): {result.objective:.6f}")
+        print(f"  FAILED: {result.status} -- no feasible solution.")
+        if mode == "direct" and net in (11, 36, 97):
+            print("  hint: this looped network needs --mode warmstart (or epanet/optimize).")
+        return (CaseResult(label, net, mode, "TOU" if price == 1 else "flat",
+                           wdn.time, elapsed, False, result.n_iter,
+                           epanet_cost=epanet_cost, note=f"failed: {result.status}"),
+                wdn, result)
 
-    report = validate(wdn, result)
-    print("\n" + report.summary())
+    owf_cost = true_energy_cost(wdn, result.flows)
+    savings = 100.0 * (epanet_cost - owf_cost) / epanet_cost if epanet_cost else 0.0
 
-    sched = validate_schedule(wdn, result)
-    print("\n" + sched.summary())
+    # honest check: re-simulate the resulting schedule in EPANET
+    rep = validate_schedule(wdn, result)
+    junction_head = wdn.M.Kappa @ rep.heads_epanet
+    elev = (wdn.M.Kappa @ wdn.raw.node_elevations[:, None]).ravel()
+    min_press = float((junction_head - elev[:, None]).min())
 
-    if args.plot:
+    case = CaseResult(
+        label=label, net_num=net, mode=mode,
+        price="TOU" if price == 1 else "flat", horizon=wdn.time,
+        elapsed=elapsed, converged=result.converged, n_iter=result.n_iter,
+        epanet_cost=epanet_cost, owf_cost=owf_cost, savings_pct=savings,
+        max_dhead=rep.max_abs_head, max_dpumpflow=rep.max_abs_pump_flow,
+        min_pressure=min_press, note=note,
+    )
+
+    if plot:
         from owf.plots import plot_all
-        paths = plot_all(wdn, result, sched, outdir=args.outdir)
-        print("\nPlots written:")
-        for p in paths:
-            print(f"  {p}")
+        prefix = f"{NETWORKS[net].name}_{mode}"
+        case.plots = plot_all(wdn, result, rep, outdir=outdir, prefix=prefix)
+
+    print(comparison_table([case]))
+    if case.plots:
+        print("  plots:")
+        for p in case.plots:
+            print(f"    {p}")
+    return case, wdn, result
+
+
+# ---------------------------------------------------------------------------
+# Comparison table
+# ---------------------------------------------------------------------------
+def comparison_table(cases: list) -> str:
+    """EPANET vs C-OWPF comparison for one or more cases."""
+    head = (f"\n{'case':28s} {'EPANET':>9s} {'C-OWPF':>9s} {'saving':>8s} "
+            f"{'dHead':>8s} {'dPumpQ':>8s} {'minP':>7s} {'conv':>5s} {'time':>6s}")
+    sep = "-" * len(head)
+    lines = [head, sep]
+    for c in cases:
+        conv = "yes" if c.converged else "NO"
+        sv = f"{c.savings_pct:7.1f}%" if np.isfinite(c.savings_pct) else "     --"
+        dh = f"{c.max_dhead:8.3f}" if np.isfinite(c.max_dhead) else "      --"
+        dq = f"{c.max_dpumpflow:8.3f}" if np.isfinite(c.max_dpumpflow) else "      --"
+        mp = f"{c.min_pressure:7.1f}" if np.isfinite(c.min_pressure) else "     --"
+        lines.append(
+            f"{c.label:28s} {c.epanet_cost:9.5f} "
+            f"{c.owf_cost:9.5f} {sv} {dh} {dq} {mp} {conv:>5s} {c.elapsed:5.0f}s"
+        )
+        if c.note:
+            lines.append(f"    note: {c.note}")
+    lines.append(sep)
+    lines.append("cost = true nonlinear energy cost;  dHead [ft] / dPumpQ [GPM] = "
+                 "EPANET replay of the C-OWPF schedule;  minP = min junction "
+                 "pressure in that replay (>0 means hydraulically feasible)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Interactive driver
+# ---------------------------------------------------------------------------
+def _ask(prompt: str, default: str, valid=None) -> str:
+    while True:
+        raw = input(f"{prompt} [{default}]: ").strip().lstrip("﻿\xff\xfe").lower()
+        if not raw:
+            return default
+        if valid is None or raw in valid:
+            return raw
+        print(f"  please enter one of: {', '.join(valid)}")
+
+
+def interactive() -> None:
+    print("=" * 70)
+    print("FSP Optimal Water Flow (OWF) -- interactive driver")
+    print("=" * 70)
+    session: list[CaseResult] = []
+    while True:
+        print("\nAvailable networks:")
+        for n in NETWORKS:
+            rec, alt = MODE_SUGGESTION[n]
+            print(f"  {n:>3d}  {NET_BLURB[n]:52s} (recommended: {rec})")
+        net = int(_ask("Network", "8", {str(n) for n in NETWORKS}))
+
+        rec, alt = MODE_SUGGESTION[net]
+        print(f"\nModes for {NETWORKS[net].name}:")
+        for m, desc in MODES.items():
+            tag = "  <-- recommended" if m == rec else (
+                  "  <-- try for savings" if m == alt else "")
+            print(f"  {m:9s} {desc}{tag}")
+        if net == 97:
+            print("  note: Net3's tank controls are already near-optimal; 'optimize'"
+                  " honestly reports ~0% savings and takes ~3 min.")
+        mode = _ask("Mode", rec, set(MODES))
+
+        price = int(_ask("Price (1=time-of-use, 0=flat)", "1", {"0", "1"}))
+        plot = _ask("Write plots? (y/n)", "y", {"y", "n"}) == "y"
+
+        try:
+            case, _, _ = run_case(net, mode, price, None, plot, "outputs", False)
+            if case:
+                session.append(case)
+        except KeyboardInterrupt:
+            print("\n  case interrupted.")
+        except Exception as exc:
+            print(f"  case failed: {exc}")
+
+        if _ask("\nRun another case? (y/n)", "n", {"y", "n"}) == "n":
+            break
+
+    if len(session) > 1:
+        print("\n" + "=" * 70)
+        print("SESSION SUMMARY -- all cases")
+        print("=" * 70)
+        print(comparison_table(session))
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def main() -> None:
+    if len(sys.argv) == 1:
+        interactive()
+        return
+
+    p = argparse.ArgumentParser(description="FSP Optimal Water Flow (OWF) solver")
+    p.add_argument("--net", type=int, default=8, choices=list(NETWORKS))
+    p.add_argument("--mode", default="auto",
+                   choices=["auto", *MODES], help="auto = recommended per network")
+    p.add_argument("--price", type=int, default=1, choices=[0, 1])
+    p.add_argument("--time", type=int, default=None, help="horizon (hours)")
+    p.add_argument("--plot", action="store_true")
+    p.add_argument("--outdir", default="outputs")
+    p.add_argument("--verbose", action="store_true")
+    # kept for backward compatibility: --warmstart == --mode warmstart
+    p.add_argument("--warmstart", action="store_true", help=argparse.SUPPRESS)
+    a = p.parse_args()
+
+    mode = a.mode
+    if a.warmstart and mode == "auto":
+        mode = "warmstart"
+    if mode == "auto":
+        mode = MODE_SUGGESTION[a.net][0]
+        print(f"mode=auto -> using recommended '{mode}' for {NETWORKS[a.net].name}")
+
+    run_case(a.net, mode, a.price, a.time, a.plot, a.outdir, a.verbose)
 
 
 if __name__ == "__main__":

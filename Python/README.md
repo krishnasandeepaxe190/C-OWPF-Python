@@ -13,13 +13,24 @@ objective and constraints with binary pump on/off variables — solved with
 
 ```bash
 pip install -r requirements.txt
-python main_owf.py                       # 8-node, time-of-use price, EPANET init
-python main_owf.py --net 3 --verbose     # 3-node
-python main_owf.py --net 11 --warmstart  # Net1 (looped): EPANET multi-start warm-start
-python main_owf.py --net 36 --warmstart  # Net2 (looped)
-python main_owf.py --net 8 --plot        # + write plots to outputs/
-pytest tests/                            # regression suite
+
+python main_owf.py            # INTERACTIVE: pick network, get a recommended mode,
+                              # run, plot, and print the comparison table
+
+# or non-interactive:
+python main_owf.py --net 8                        # auto mode (recommended per net)
+python main_owf.py --net 36 --mode optimize --plot  # find savings vs EPANET + plots
+python main_owf.py --net 97 --mode epanet --plot    # reproduce EPANET (Net3)
+python main_owf.py --net 11 --mode warmstart        # looped-network warm-start
+pytest tests/                                     # regression suite
 ```
+
+**Modes** (`--mode`, or suggested interactively): `direct` (tree networks),
+`warmstart` (looped networks), `epanet` (reproduce EPANET's rule-based operation),
+`optimize` (search for the cheapest feasible schedule; reports savings).
+Every run ends with an **EPANET-vs-C-OWPF comparison table** — true energy cost,
+savings, EPANET-replay errors, and min junction pressure — and the interactive
+driver prints an aggregate session table across the cases you ran.
 
 ## Plots
 
