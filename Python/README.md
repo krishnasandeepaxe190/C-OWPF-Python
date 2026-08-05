@@ -14,6 +14,7 @@ objective and constraints with binary pump on/off variables — solved with
 ```bash
 pip install -r requirements.txt
 
+# Windows: double-click Python\run_ui.bat  (installs deps on first run, opens the UI)
 streamlit run app.py          # WEB UI: case setup, interactive network map,
                               # plots, case diff, CSV downloads, session table
 
