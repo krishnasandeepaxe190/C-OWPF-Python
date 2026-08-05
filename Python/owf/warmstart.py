@@ -285,11 +285,30 @@ def optimize_schedule(
                 if improved:
                     break
 
+    # --- final clean convergence of the winning schedule ------------------
+    # The candidate/polish solves use soft bounds + capped iterations tuned for
+    # fast *ranking*; the winner's heads/flows from that pass can be a poor
+    # iterate (large EPANET-replay error) even though its cost/feasibility are
+    # fine. Re-solve the chosen schedule cleanly so the returned result is
+    # accurate for reporting and plotting.
+    final = solve_fixed_schedule(wdn, best_sched)
+    final_ok = (final.flows is not None
+                and final.status in ("optimal", "optimal_inaccurate"))
+    if final_ok:
+        # hard solve -> max_slack is nan (no slack vars); a returned optimal
+        # solution already satisfies the hard bounds, so treat that as slack 0.
+        final_slack = final.max_slack if np.isfinite(final.max_slack) else 0.0
+        if final_slack <= feas_tol:
+            # The clean solve is authoritative for the chosen schedule: its cost
+            # is the true cost (candidate solves are under-converged for speed and
+            # may understate it), and its heads/flows reproduce EPANET.
+            best, best_cost, best_slack = final, true_energy_cost(wdn, final.flows), final_slack
+
     info = {
         "baseline_cost": baseline_cost,
         "baseline_slack": baseline_slack,
         "best_cost": best_cost,
-        "best_slack": best_slack,
+        "best_slack": float(best_slack),
         "savings_pct": (100.0 * (baseline_cost - best_cost) / baseline_cost
                         if baseline_cost else 0.0),
         "trace": trace,
