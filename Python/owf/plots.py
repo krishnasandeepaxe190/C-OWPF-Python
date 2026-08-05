@@ -31,14 +31,16 @@ def plot_convergence(result: OWFResult):
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4))
     it = np.arange(1, len(result.errors) + 1)
+    single = len(result.errors) == 1
+    ms = 12 if single else 6      # a lone point needs to be big enough to see
 
-    ax1.semilogy(it, result.errors, "o-", color="tab:blue")
+    ax1.semilogy(it, result.errors, "o-", color="tab:blue", markersize=ms)
     ax1.set_xlabel("iteration")
     ax1.set_ylabel(r"$\|\epsilon_k - \epsilon_{k-1}\|$")
     ax1.set_title("Successive-linearization convergence")
     ax1.grid(True, which="both", alpha=0.3)
 
-    ax2.plot(it, result.objectives, "s-", color="tab:red")
+    ax2.plot(it, result.objectives, "s-", color="tab:red", markersize=ms)
     ax2.set_xlabel("iteration")
     ax2.set_ylabel("energy cost")
     ax2.set_title("Objective per iteration")
@@ -46,6 +48,16 @@ def plot_convergence(result: OWFResult):
 
     for ax in (ax1, ax2):
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        if single:
+            # one iteration: pad the x-axis and label the point so it doesn't
+            # look like a stray dot -- this is a fixed-schedule warm start that
+            # was already at its fixed point.
+            ax.set_xlim(0.5, 1.5)
+            ax.annotate("converged in 1 iteration\n(warm-started fixed schedule)",
+                        xy=(1, ax.get_lines()[0].get_ydata()[0]),
+                        xytext=(0.55, 0.88), textcoords="axes fraction",
+                        fontsize=9, color="gray",
+                        arrowprops=dict(arrowstyle="->", color="gray", lw=1))
 
     fig.tight_layout()
     return fig
