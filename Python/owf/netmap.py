@@ -134,3 +134,105 @@ def build_map_figure(data: dict, hour: int | None = None):
         legend=dict(orientation="h", y=-0.02),
     )
     return fig
+
+
+def build_animated_map_figure(data: dict):
+    """Animated map: a Play button steps through the hours, drawing each link's
+    flow as a direction arrow (angle = flow direction, size = |flow|) over the
+    junction-pressure field. Falls back to the static map if no solution."""
+    import plotly.graph_objects as go
+
+    if "flows" not in data:
+        return build_map_figure(data)
+
+    x, y = data["x"], data["y"]
+    T = data["time"]
+    flows = data["flows"]                      # (L x T)
+    pressure = data["pressure"]                # (N x T)
+    from_n, to_n = data["from_node"], data["to_node"]
+    qmax = max(float(np.abs(flows).max()), 1.0)
+    pmax = max(float(pressure[data["node_kind"] == "junction"].max()), 1.0)
+
+    # per-link geometry: midpoint + compass angle of the from->to direction
+    ax_, ay_ = x[from_n], y[from_n]
+    bx_, by_ = x[to_n], y[to_n]
+    midx, midy = (ax_ + bx_) / 2, (ay_ + by_) / 2
+    base_ang = np.degrees(np.arctan2(bx_ - ax_, by_ - ay_))   # 0 = north, CW
+
+    # static link lines (drawn once, behind the arrows)
+    lx, ly = [], []
+    for l in range(len(from_n)):
+        lx += [x[from_n[l]], x[to_n[l]], None]
+        ly += [y[from_n[l]], y[to_n[l]], None]
+    link_trace = go.Scatter(x=lx, y=ly, mode="lines",
+                            line=dict(color="#9AA0A6", width=1.2),
+                            hoverinfo="skip", showlegend=False)
+
+    def arrows(t):
+        f = flows[:, t]
+        ang = np.where(f >= 0, base_ang, base_ang + 180.0)     # flip when reversed
+        size = 9 + 16 * np.abs(f) / qmax
+        text = [f"{data['link_kind'][l]} {data['link_id'][l]}<br>"
+                f"{f[l]:,.0f} GPM ({'→' if f[l] >= 0 else '←'})"
+                for l in range(len(f))]
+        return go.Scatter(
+            x=midx, y=midy, mode="markers", name="flow",
+            marker=dict(symbol="arrow", angle=ang, size=size,
+                        angleref="up", color="#1f77b4",
+                        line=dict(width=0.5, color="#08306b")),
+            hovertext=text, hoverinfo="text", showlegend=False)
+
+    ji = np.where(data["node_kind"] == "junction")[0]
+
+    def junctions(t):
+        text = [f"junction {data['node_id'][n]}<br>head {data['heads'][n, t]:.1f} ft"
+                f"<br>pressure {pressure[n, t]:.1f} ft" for n in ji]
+        return go.Scatter(
+            x=x[ji], y=y[ji], mode="markers", name="junction",
+            marker=dict(size=9, color=pressure[ji, t], colorscale="RdYlGn",
+                        cmin=0.0, cmax=pmax, line=dict(width=1, color="#222"),
+                        colorbar=dict(title="pressure (ft)", thickness=12)),
+            hovertext=text, hoverinfo="text", showlegend=False)
+
+    # static tank / reservoir markers
+    extra = []
+    for kind in ("tank", "reservoir"):
+        idx = np.where(data["node_kind"] == kind)[0]
+        if idx.size:
+            st = _NODE_STYLE[kind]
+            extra.append(go.Scatter(
+                x=x[idx], y=y[idx], mode="markers", name=kind,
+                marker=dict(symbol=st["symbol"], size=st["size"], color=st["color"],
+                            line=dict(width=1, color="#222")),
+                hovertext=[f"{kind} {data['node_id'][n]}" for n in idx],
+                hoverinfo="text"))
+
+    frames = [go.Frame(name=str(t), data=[arrows(t), junctions(t)], traces=[1, 2])
+              for t in range(T)]
+
+    fig = go.Figure(
+        data=[link_trace, arrows(0), junctions(0), *extra],
+        frames=frames,
+    )
+    play = dict(label="▶ Play", method="animate",
+                args=[None, dict(frame=dict(duration=650, redraw=True),
+                                 fromcurrent=True, transition=dict(duration=0))])
+    pause = dict(label="⏸ Pause", method="animate",
+                 args=[[None], dict(frame=dict(duration=0, redraw=False),
+                                    mode="immediate")])
+    steps = [dict(method="animate", label=str(t),
+                  args=[[str(t)], dict(mode="immediate",
+                                       frame=dict(duration=0, redraw=True))])
+             for t in range(T)]
+    fig.update_layout(
+        title="Flow animation — arrow direction = flow direction, size = |flow|",
+        height=600, margin=dict(l=10, r=10, t=70, b=10),
+        xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        updatemenus=[dict(type="buttons", direction="left", showactive=False,
+                          x=0.0, y=1.08, xanchor="left", yanchor="top",
+                          buttons=[play, pause])],
+        sliders=[dict(active=0, x=0.12, y=0, len=0.85,
+                      currentvalue=dict(prefix="hour "), steps=steps)],
+    )
+    return fig

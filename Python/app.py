@@ -26,7 +26,12 @@ from owf.config import (  # noqa: E402
     available_solvers,
 )
 from owf.epanet_io import read_controls_rules  # noqa: E402
-from owf.netmap import build_map_figure, extract_map_data  # noqa: E402
+from owf.netmap import (  # noqa: E402
+    build_animated_map_figure,
+    build_map_figure,
+    extract_map_data,
+)
+from guide import render_guide  # noqa: E402
 from main_owf import (  # noqa: E402
     MODES,
     MODE_SUGGESTION,
@@ -117,8 +122,8 @@ def _render_case(rec: dict) -> None:
     if case.note:
         st.caption(f"note: {case.note}")
 
-    tab_names = ["Network map", "Schedule", "Flows", "Heads", "Convergence",
-                 "Error", "Solver log", "Download"]
+    tab_names = ["Network map", "Flow animation", "Schedule", "Flows", "Heads",
+                 "Convergence", "Error", "Solver log", "Download"]
     tabs = st.tabs(tab_names)
 
     with tabs[0]:
@@ -131,9 +136,19 @@ def _render_case(rec: dict) -> None:
             st.plotly_chart(build_map_figure(md), use_container_width=True,
                             key=f"map_{rec['id']}")
 
+    with tabs[1]:
+        md = rec["map_data"]
+        if "flows" in md:
+            st.caption("Press ▶ Play to animate the hours. Arrow **direction** = "
+                       "flow direction, arrow **size** = |flow|, node color = pressure.")
+            st.plotly_chart(build_animated_map_figure(md), use_container_width=True,
+                            key=f"anim_{rec['id']}")
+        else:
+            st.info("No solution to animate.")
+
     plot_order = ["schedule", "flows", "heads", "convergence", "error"]
     by_kind = {Path(p).stem.split("_")[-1]: p for p in rec["plots"]}
-    for tab, kind in zip(tabs[1:6], plot_order):
+    for tab, kind in zip(tabs[2:7], plot_order):
         with tab:
             p = by_kind.get(kind)
             if p and Path(p).exists():
@@ -141,10 +156,10 @@ def _render_case(rec: dict) -> None:
             else:
                 st.info("plot not available")
 
-    with tabs[6]:
+    with tabs[7]:
         st.code(rec["log"] or "(no output)", language="text")
 
-    with tabs[7]:
+    with tabs[8]:
         st.write("Per-case results as CSV:")
         cols = st.columns(len(rec["exports"]) or 1)
         for col, (name, blob) in zip(cols, rec["exports"].items()):
@@ -259,8 +274,12 @@ if run_clicked:
         st.session_state.records.append(record)
 
 # ---------------------------------------------------------------- results
-records = st.session_state.records
-if records:
+def render_results() -> None:
+    records = st.session_state.records
+    if not records:
+        st.info("Set up a case in the sidebar and press **Run case**.")
+        return
+
     latest = records[-1]
     st.subheader(f"Result — run {latest['id']}: {latest['case'].label}")
     _render_case(latest)
@@ -291,7 +310,7 @@ if records:
         B = next(r for r in records if r["id"] == b_id)
         ca, cb = A["case"], B["case"]
 
-        def _row(name, va, vb, fmt="{:.4f}", better="lower"):
+        def _row(name, va, vb, fmt="{:.4f}"):
             da = fmt.format(va) if np.isfinite(va) else "—"
             db = fmt.format(vb) if np.isfinite(vb) else "—"
             delta = (vb - va) if (np.isfinite(va) and np.isfinite(vb)) else None
@@ -309,7 +328,6 @@ if records:
         ])
         st.dataframe(diff_df, use_container_width=True, hide_index=True)
 
-        # pump schedules side by side
         pa = {Path(p).stem.split("_")[-1]: p for p in A["plots"]}.get("schedule")
         pb = {Path(p).stem.split("_")[-1]: p for p in B["plots"]}.get("schedule")
         img_a, img_b = st.columns(2)
@@ -317,5 +335,10 @@ if records:
             img_a.image(str(pa), caption=labels[a_id], use_container_width=True)
         if pb and Path(pb).exists():
             img_b.image(str(pb), caption=labels[b_id], use_container_width=True)
-else:
-    st.info("Set up a case in the sidebar and press **Run case**.")
+
+
+tab_run, tab_guide = st.tabs(["▶  Run", "📖  Guide"])
+with tab_run:
+    render_results()
+with tab_guide:
+    render_guide(st)
