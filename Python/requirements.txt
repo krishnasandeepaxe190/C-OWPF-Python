@@ -4,5 +4,12 @@ epyt>=2.2
 numpy>=1.24
 scipy>=1.10
 matplotlib>=3.6   # plots only (owf.plots)
-streamlit>=1.50   # UI only (app.py)
 pandas>=2.0       # UI session table
+plotly>=6.0       # UI network map / animation
+# UI server stack -- pinned together: Streamlit 1.60 runs on Starlette/uvicorn,
+# and a newer Starlette breaks Streamlit's gzip middleware (GZipResponder
+# __init__ missing 'thread_minimum_size'), which 500s every request on a fresh
+# cloud install. Keep these three in lockstep.
+streamlit==1.60.0
+starlette==1.0.0
+uvicorn==0.44.0
