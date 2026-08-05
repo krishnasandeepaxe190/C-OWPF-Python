@@ -116,7 +116,10 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
     print(f"  network: nodes={wdn.n_nodes} links={wdn.n_links} pumps={wdn.n_pumps} "
           f"tanks={wdn.n_tanks} horizon={wdn.time}h")
 
-    # EPANET's own operation is the comparison baseline for every mode.
+    # Cost baseline: EPANET running its OWN tank-level rules (a *different*
+    # schedule from the optimizer). This is the only place EPANET's rule-based
+    # operation is used, and it is used for cost only -- never for head/flow
+    # error, since the schedules differ.
     from owf.epanet_io import run_epanet
     flows_ep, _, _, _ = run_epanet(wdn.raw)
     epanet_cost = true_energy_cost(wdn, flows_ep[: wdn.time].T)
@@ -135,7 +138,9 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
             result.converged = bool(result.max_slack <= 2.0)
     elif mode == "optimize":
         result, info = optimize_schedule(wdn, verbose=verbose)
-        epanet_cost = info["baseline_cost"]
+        # NOTE: epanet_cost stays the raw EPANET rule-based cost (above), the same
+        # baseline used by every other mode -- not optimize's internal LP-reproduced
+        # baseline -- so savings are reported consistently across modes.
         note = f"searched {len(info['trace'])} schedules, {info['n_flips']} polish flips"
         # for optimize mode, "converged" means the winning schedule is feasible
         result.converged = bool(info["best_slack"] <= 2.0)
@@ -187,9 +192,9 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
 # Comparison table
 # ---------------------------------------------------------------------------
 def comparison_table(cases: list) -> str:
-    """EPANET vs C-OWPF comparison for one or more cases."""
-    head = (f"\n{'case':28s} {'EPANET':>9s} {'C-OWPF':>9s} {'saving':>8s} "
-            f"{'dHead':>8s} {'dPumpQ':>8s} {'minP':>7s} {'conv':>5s} {'time':>6s}")
+    """EPANET(rules) vs C-OWPF comparison for one or more cases."""
+    head = (f"\n{'case':28s} {'EPANET(rules)':>13s} {'C-OWPF':>9s} {'saving':>8s} "
+            f"{'dHead':>8s} {'dPumpQ':>8s} {'minP':>7s} {'feas':>5s} {'time':>6s}")
     sep = "-" * len(head)
     lines = [head, sep]
     for c in cases:
@@ -199,15 +204,20 @@ def comparison_table(cases: list) -> str:
         dq = f"{c.max_dpumpflow:8.3f}" if np.isfinite(c.max_dpumpflow) else "      --"
         mp = f"{c.min_pressure:7.1f}" if np.isfinite(c.min_pressure) else "     --"
         lines.append(
-            f"{c.label:28s} {c.epanet_cost:9.5f} "
+            f"{c.label:28s} {c.epanet_cost:13.5f} "
             f"{c.owf_cost:9.5f} {sv} {dh} {dq} {mp} {conv:>5s} {c.elapsed:5.0f}s"
         )
         if c.note:
             lines.append(f"    note: {c.note}")
     lines.append(sep)
-    lines.append("cost = true nonlinear energy cost;  dHead [ft] / dPumpQ [GPM] = "
-                 "EPANET replay of the C-OWPF schedule;  minP = min junction "
-                 "pressure in that replay (>0 means hydraulically feasible)")
+    lines.append(
+        "COST columns compare DIFFERENT schedules: EPANET(rules) = EPANET's own "
+        "tank-level rule operation vs C-OWPF's optimized schedule (true nonlinear "
+        "energy cost); saving = % reduction.")
+    lines.append(
+        "ERROR columns use the SAME schedule: the C-OWPF schedule is imposed in "
+        "EPANET and replayed -- dHead [ft] / dPumpQ [GPM] are max |C-OWPF - EPANET|; "
+        "minP = min junction pressure in that replay (>0 = hydraulically feasible).")
     return "\n".join(lines)
 
 

@@ -72,12 +72,12 @@ def _session_df() -> pd.DataFrame:
         rows.append({
             "run": rec["id"],
             "case": c.label,
-            "EPANET cost": round(c.epanet_cost, 5),
+            "EPANET cost (rules)": round(c.epanet_cost, 5),
             "C-OWPF cost": round(c.owf_cost, 5) if np.isfinite(c.owf_cost) else None,
             "saving %": round(c.savings_pct, 1) if np.isfinite(c.savings_pct) else None,
-            "max |dHead| ft": round(c.max_dhead, 3) if np.isfinite(c.max_dhead) else None,
-            "max |dPumpQ| GPM": round(c.max_dpumpflow, 3) if np.isfinite(c.max_dpumpflow) else None,
-            "min press. ft": round(c.min_pressure, 1) if np.isfinite(c.min_pressure) else None,
+            "replay max |dHead| ft": round(c.max_dhead, 3) if np.isfinite(c.max_dhead) else None,
+            "replay max |dPumpQ| GPM": round(c.max_dpumpflow, 3) if np.isfinite(c.max_dpumpflow) else None,
+            "replay min press. ft": round(c.min_pressure, 1) if np.isfinite(c.min_pressure) else None,
             "feasible": "yes" if c.converged else "no",
             "time s": round(c.elapsed),
         })
@@ -93,13 +93,18 @@ def _render_case(rec: dict) -> None:
         return
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("EPANET cost", f"{case.epanet_cost:.4f}")
+    c1.metric("EPANET cost (rules)", f"{case.epanet_cost:.4f}",
+              help="EPANET running its OWN tank-level rules — a DIFFERENT schedule. "
+                   "Used for cost comparison only.")
     c2.metric("C-OWPF cost", f"{case.owf_cost:.4f}",
-              delta=f"{-case.savings_pct:.1f}%", delta_color="inverse")
+              delta=f"{-case.savings_pct:.1f}%", delta_color="inverse",
+              help="Optimized schedule, true nonlinear energy cost.")
     c3.metric("Max head error", f"{case.max_dhead:.3f} ft",
-              help="EPANET replay of the optimized schedule")
+              help="SAME schedule: the C-OWPF schedule is imposed in EPANET and "
+                   "replayed; max |C-OWPF − EPANET| head.")
     c4.metric("Min junction pressure", f"{case.min_pressure:.1f} ft",
-              help="> 0 means hydraulically feasible in EPANET")
+              help="Min junction pressure in the same-schedule replay; "
+                   "> 0 means hydraulically feasible in EPANET.")
     c5.metric("Solve time", f"{case.elapsed:.0f} s", help=f"{case.n_iter} iterations")
     if case.note:
         st.caption(f"note: {case.note}")
@@ -223,8 +228,12 @@ if records:
     st.dataframe(df, use_container_width=True, hide_index=True)
     st.download_button("Download session table (CSV)", data=_csv_bytes(df.set_index("run")),
                        file_name="owf_session_comparison.csv", mime="text/csv")
-    st.caption("cost = true nonlinear energy cost; errors from the EPANET replay "
-               "of each case's schedule.")
+    st.caption(
+        "**Cost** columns compare *different* schedules — EPANET's own tank-level "
+        "rules vs the C-OWPF optimized schedule (true nonlinear energy cost). "
+        "**Replay** columns use the *same* schedule — the C-OWPF schedule imposed "
+        "back into EPANET — so they measure linearization fidelity, not the "
+        "cost-saving operating point.")
 
     # ------------------------------------------------ side-by-side diff
     if len(records) >= 2:
@@ -247,12 +256,12 @@ if records:
                     "Δ (B − A)": (fmt.format(delta) if delta is not None else "—")}
 
         diff_df = pd.DataFrame([
-            _row("EPANET cost", ca.epanet_cost, cb.epanet_cost),
+            _row("EPANET cost (rules)", ca.epanet_cost, cb.epanet_cost),
             _row("C-OWPF cost", ca.owf_cost, cb.owf_cost),
             _row("saving %", ca.savings_pct, cb.savings_pct, "{:.1f}"),
-            _row("max |dHead| (ft)", ca.max_dhead, cb.max_dhead, "{:.3f}"),
-            _row("max |dPumpQ| (GPM)", ca.max_dpumpflow, cb.max_dpumpflow, "{:.3f}"),
-            _row("min pressure (ft)", ca.min_pressure, cb.min_pressure, "{:.1f}"),
+            _row("replay max |dHead| (ft)", ca.max_dhead, cb.max_dhead, "{:.3f}"),
+            _row("replay max |dPumpQ| (GPM)", ca.max_dpumpflow, cb.max_dpumpflow, "{:.3f}"),
+            _row("replay min pressure (ft)", ca.min_pressure, cb.min_pressure, "{:.1f}"),
             _row("solve time (s)", ca.elapsed, cb.elapsed, "{:.0f}"),
         ])
         st.dataframe(diff_df, use_container_width=True, hide_index=True)
