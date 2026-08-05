@@ -117,7 +117,9 @@ def build_map_figure(data: dict, hour: int | None = None):
             marker.update(color=data["pressure"][idx, hour],
                           colorscale="RdYlGn", cmin=0.0,
                           cmax=max(float(data["pressure"].max()), 1.0),
-                          colorbar=dict(title="pressure (ft)", thickness=12))
+                          colorbar=dict(title=dict(text="pressure (ft)", side="right"),
+                                        thickness=12, len=0.75, x=1.0, xanchor="left",
+                                        y=0.5, yanchor="middle"))
         else:
             marker["color"] = style["color"]
         fig.add_trace(go.Scatter(
@@ -128,10 +130,10 @@ def build_map_figure(data: dict, hour: int | None = None):
     title = "Network map" if not have_sol else f"Network state at hour {hour}"
     fig.update_layout(
         title=title, showlegend=True, height=560,
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=10, r=70, t=40, b=40),
         xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", y=-0.02),
+        legend=dict(orientation="h", yanchor="top", y=-0.03, x=0, xanchor="left"),
     )
     return fig
 
@@ -191,7 +193,9 @@ def build_animated_map_figure(data: dict):
             x=x[ji], y=y[ji], mode="markers", name="junction",
             marker=dict(size=9, color=pressure[ji, t], colorscale="RdYlGn",
                         cmin=0.0, cmax=pmax, line=dict(width=1, color="#222"),
-                        colorbar=dict(title="pressure (ft)", thickness=12)),
+                        colorbar=dict(title=dict(text="pressure (ft)", side="right"),
+                                      thickness=12, len=0.75, x=1.0, xanchor="left",
+                                      y=0.5, yanchor="middle")),
             hovertext=text, hoverinfo="text", showlegend=False)
 
     # static tank / reservoir markers
@@ -225,14 +229,18 @@ def build_animated_map_figure(data: dict):
                                        frame=dict(duration=0, redraw=True))])
              for t in range(T)]
     fig.update_layout(
-        title="Flow animation — arrow direction = flow direction, size = |flow|",
-        height=600, margin=dict(l=10, r=10, t=70, b=10),
+        # title is provided by the app caption above the chart -- omit here so the
+        # top strip holds the Play buttons and the legend without collision.
+        height=620, margin=dict(l=10, r=70, t=48, b=64),
         xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.34,
+                    xanchor="left"),
         updatemenus=[dict(type="buttons", direction="left", showactive=False,
-                          x=0.0, y=1.08, xanchor="left", yanchor="top",
+                          x=0.0, y=1.08, xanchor="left", yanchor="bottom",
                           buttons=[play, pause])],
-        sliders=[dict(active=0, x=0.12, y=0, len=0.85,
+        sliders=[dict(active=0, x=0.12, y=-0.02, len=0.8,
                       currentvalue=dict(prefix="hour "), steps=steps)],
     )
     return fig
