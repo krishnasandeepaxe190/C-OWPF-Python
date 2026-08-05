@@ -53,6 +53,31 @@ The EPANET series in the flow/head plots come from the **schedule-imposed**
 re-simulation, so overlapping curves mean the linearized solution reproduces the
 true nonlinear hydraulics.
 
+## Deploy the web UI (Railway / any container host)
+
+The app is a standard Streamlit app; all solvers (HiGHS, SCIP), CVXPY and epyt's
+bundled EPANET have Linux wheels, so it runs on a Linux container unchanged.
+Deploy files live in `Python/`: `Procfile`, `runtime.txt`, `.streamlit/config.toml`.
+
+**Railway (from GitHub):**
+1. Push the repo to GitHub (`git push`). Only `Python/` is tracked; `Matlab/` is
+   git-ignored, so nothing proprietary ships.
+2. On railway.app: **New Project → Deploy from GitHub repo** → pick this repo.
+3. In the service **Settings**, set **Root Directory** = `Python` (so Railway sees
+   `requirements.txt` and the `Procfile`).
+4. Railway builds with Nixpacks (reads `runtime.txt` → Python 3.11) and starts with
+   the `Procfile`, which binds Streamlit to Railway's `$PORT` on `0.0.0.0`.
+5. Open the generated public URL.
+
+Notes:
+- **No auth** — anyone with the URL can run solves (which cost CPU). Add Railway
+  access control or a password if that matters.
+- The filesystem is **ephemeral** — generated plots/CSVs live only for the session.
+- `optimize`/Net3 runs are minutes-long and memory-hungry; a small instance is fine
+  for the tree/looped demos but size up if you rely on Net3 `optimize`.
+- MOSEK/Gurobi stay unavailable in the cloud unless you add their packages **and**
+  a license; HiGHS/SCIP need neither.
+
 ## Web UI (`streamlit run app.py`)
 
 - **Case setup** with per-network recommended modes and honest warnings

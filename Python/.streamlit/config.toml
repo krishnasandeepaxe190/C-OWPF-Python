@@ -1,0 +1,14 @@
+# Streamlit server config for container/cloud deployment (Railway, etc.).
+# The port is overridden by $PORT via the Procfile; these are safe defaults.
+[server]
+headless = true
+address = "0.0.0.0"
+enableCORS = false
+enableXsrfProtection = true
+maxUploadSize = 20
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
