@@ -288,6 +288,29 @@ def simulate_with_schedule(
     return heads, flows
 
 
+def read_controls_rules(inp_path) -> dict:
+    """Return the operational logic EPANET uses, straight from the .inp file:
+    the [CONTROLS] (simple) and [RULES] (rule-based) sections as text lines.
+
+    This is the *baseline* schedule the C-OWPF cost is compared against.
+    """
+    sections = {"CONTROLS": [], "RULES": []}
+    current = None
+    try:
+        with open(inp_path, "r", errors="ignore") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if stripped.startswith("["):
+                    tag = stripped.strip("[]").upper()
+                    current = tag if tag in sections else None
+                    continue
+                if current and stripped and not stripped.startswith(";"):
+                    sections[current].append(stripped)
+    except OSError:
+        pass
+    return sections
+
+
 def run_epanet(raw: RawNetwork) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Extended-period hydraulic simulation (ports init_epanet.m).
 

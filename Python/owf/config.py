@@ -141,3 +141,21 @@ class SolverConfig:
                 f"Unknown net_num={self.net_num}. Available: {sorted(NETWORKS)}"
             )
         return NETWORKS[self.net_num]
+
+
+# MILP-capable solvers CVXPY can drive, in preference order. HiGHS is the
+# default (bundled, no license); SCIP is the open fallback; MOSEK and Gurobi are
+# commercial and only usable if the user has installed them with a valid license.
+SOLVER_CHOICES = ["HIGHS", "SCIP", "MOSEK", "GUROBI"]
+DEFAULT_SOLVER = "HIGHS"
+DEFAULT_FALLBACK = "SCIP"
+
+
+def available_solvers() -> list[str]:
+    """MILP solvers from SOLVER_CHOICES that are actually installed."""
+    try:
+        import cvxpy as cp
+        installed = set(cp.installed_solvers())
+    except Exception:
+        installed = set()
+    return [s for s in SOLVER_CHOICES if s in installed]

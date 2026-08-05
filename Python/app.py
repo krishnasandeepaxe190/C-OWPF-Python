@@ -19,6 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 warnings.filterwarnings("ignore")
 
 from owf import NETWORKS  # noqa: E402
+from owf.config import (  # noqa: E402
+    DEFAULT_FALLBACK,
+    DEFAULT_SOLVER,
+    SOLVER_CHOICES,
+    available_solvers,
+)
+from owf.epanet_io import read_controls_rules  # noqa: E402
 from owf.netmap import build_map_figure, extract_map_data  # noqa: E402
 from main_owf import (  # noqa: E402
     MODES,
@@ -105,7 +112,8 @@ def _render_case(rec: dict) -> None:
     c4.metric("Min junction pressure", f"{case.min_pressure:.1f} ft",
               help="Min junction pressure in the same-schedule replay; "
                    "> 0 means hydraulically feasible in EPANET.")
-    c5.metric("Solve time", f"{case.elapsed:.0f} s", help=f"{case.n_iter} iterations")
+    c5.metric("Solve time", f"{case.elapsed:.0f} s",
+              help=f"{case.n_iter} iterations · solver {case.solver}")
     if case.note:
         st.caption(f"note: {case.note}")
 
@@ -172,7 +180,42 @@ with st.sidebar:
     price = st.radio("Electricity price", [1, 0], horizontal=True,
                      format_func=lambda p: "Time-of-use" if p == 1 else "Flat")
 
-    run_clicked = st.button("▶  Run case", type="primary", use_container_width=True)
+    # ---- MILP solver ----
+    avail = available_solvers()
+
+    def _solver_label(s: str) -> str:
+        role = ("bundled default" if s == DEFAULT_SOLVER else
+                "open fallback" if s == DEFAULT_FALLBACK else "commercial")
+        return f"{s} — {role}" + ("" if s in avail else "  (not installed)")
+
+    solver = st.selectbox("MILP solver", SOLVER_CHOICES,
+                          index=SOLVER_CHOICES.index(DEFAULT_SOLVER),
+                          format_func=_solver_label)
+    solver_ok = solver in avail
+    fb = [s for s in (DEFAULT_SOLVER, DEFAULT_FALLBACK) if s != solver and s in avail]
+    if solver_ok:
+        st.caption(f"Fallback if it fails on an iterate: {', '.join(fb) or 'none'}.")
+    else:
+        pkg = {"MOSEK": "mosek", "GUROBI": "gurobipy"}.get(solver, solver.lower())
+        st.warning(f"**{solver}** is not installed. It's commercial — install it and "
+                   f"its license to enable: `pip install {pkg}`. "
+                   f"Available now: {', '.join(avail)}.")
+
+    run_clicked = st.button("▶  Run case", type="primary", use_container_width=True,
+                            disabled=not solver_ok)
+
+    with st.expander("EPANET operating rules (cost baseline)"):
+        cr = read_controls_rules(NETWORKS[net].inp_path)
+        st.caption("EPANET runs *these* tank-level rules to produce the "
+                   "**EPANET(rules)** cost — a different schedule from C-OWPF.")
+        if cr["CONTROLS"]:
+            st.markdown("**[CONTROLS]**")
+            st.code("\n".join(cr["CONTROLS"]), language="text")
+        if cr["RULES"]:
+            st.markdown("**[RULES]**")
+            st.code("\n".join(cr["RULES"]), language="text")
+        if not cr["CONTROLS"] and not cr["RULES"]:
+            st.caption("This network defines no explicit controls or rules.")
 
     st.divider()
     if st.button("Clear session history", use_container_width=True):
@@ -189,7 +232,7 @@ if run_clicked:
             with contextlib.redirect_stdout(log_buf):
                 case, wdn, result = run_case(net, mode, price, None,
                                              plot=True, outdir="outputs",
-                                             verbose=False)
+                                             verbose=False, solver=solver)
         except Exception as exc:
             st.error(f"Case failed: {exc}")
             case = None

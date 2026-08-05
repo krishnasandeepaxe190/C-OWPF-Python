@@ -31,6 +31,12 @@ from owf import (
     solve_owf,
     validate_schedule,
 )
+from owf.config import (
+    DEFAULT_FALLBACK,
+    DEFAULT_SOLVER,
+    SOLVER_CHOICES,
+    available_solvers,
+)
 from owf.warmstart import (
     optimize_schedule,
     solve_from_epanet,
@@ -72,10 +78,18 @@ NET_BLURB = {
 }
 
 
-def _warmstart_config(net: int, price: int, horizon) -> SolverConfig:
+def _fallbacks(solver: str) -> tuple:
+    """Fall back to HiGHS then SCIP (whichever are installed), skipping the primary."""
+    avail = available_solvers()
+    return tuple(s for s in (DEFAULT_SOLVER, DEFAULT_FALLBACK)
+                 if s != solver and s in avail)
+
+
+def _warmstart_config(net: int, price: int, horizon, solver: str) -> SolverConfig:
     return SolverConfig(net_num=net, price_choice=price, time=horizon,
                         soft_bounds=True, damping=0.6, penalty_weight=1e3,
-                        penalty_growth=1.5, max_iter=60, feas_tol=0.5)
+                        penalty_growth=1.5, max_iter=60, feas_tol=0.5,
+                        solver=solver, fallback_solvers=_fallbacks(solver))
 
 
 # ---------------------------------------------------------------------------
@@ -97,22 +111,25 @@ class CaseResult:
     max_dhead: float = float("nan")     # schedule-imposed EPANET replay errors
     max_dpumpflow: float = float("nan")
     min_pressure: float = float("nan")  # min junction pressure in the EPANET replay
+    solver: str = "HIGHS"
     note: str = ""
     plots: list = field(default_factory=list)
 
 
 def run_case(net: int, mode: str, price: int, horizon, plot: bool,
-             outdir: str, verbose: bool) -> tuple[Optional[CaseResult], object, object]:
+             outdir: str, verbose: bool,
+             solver: str = "HIGHS") -> tuple[Optional[CaseResult], object, object]:
     """Construct and solve one case; returns (CaseResult, wdn, result)."""
     label = f"{NETWORKS[net].name}/{mode}/{'TOU' if price == 1 else 'flat'}"
-    print(f"\n=== case: {label} ===")
+    print(f"\n=== case: {label}  (solver={solver}) ===")
     t0 = _time.time()
 
     if mode in ("warmstart",):
-        wdn = setup(_warmstart_config(net, price, horizon))
+        wdn = setup(_warmstart_config(net, price, horizon, solver))
     else:
         wdn = setup(SolverConfig(net_num=net, price_choice=price, time=horizon,
-                                 verbose=verbose))
+                                 verbose=verbose, solver=solver,
+                                 fallback_solvers=_fallbacks(solver)))
     print(f"  network: nodes={wdn.n_nodes} links={wdn.n_links} pumps={wdn.n_pumps} "
           f"tanks={wdn.n_tanks} horizon={wdn.time}h")
 
@@ -172,7 +189,7 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
         elapsed=elapsed, converged=result.converged, n_iter=result.n_iter,
         epanet_cost=epanet_cost, owf_cost=owf_cost, savings_pct=savings,
         max_dhead=rep.max_abs_head, max_dpumpflow=rep.max_abs_pump_flow,
-        min_pressure=min_press, note=note,
+        min_pressure=min_press, solver=solver, note=note,
     )
 
     if plot:
@@ -258,10 +275,19 @@ def interactive() -> None:
         mode = _ask("Mode", rec, set(MODES))
 
         price = int(_ask("Price (1=time-of-use, 0=flat)", "1", {"0", "1"}))
+
+        avail = available_solvers()
+        print(f"\nMILP solver (available: {', '.join(avail)}; "
+              f"default {DEFAULT_SOLVER}, fallback {DEFAULT_FALLBACK}):")
+        for s in SOLVER_CHOICES:
+            state = "available" if s in avail else "not installed"
+            print(f"  {s:7s} {state}")
+        solver = _ask("Solver", DEFAULT_SOLVER, {s.lower() for s in avail}).upper()
+
         plot = _ask("Write plots? (y/n)", "y", {"y", "n"}) == "y"
 
         try:
-            case, _, _ = run_case(net, mode, price, None, plot, "outputs", False)
+            case, _, _ = run_case(net, mode, price, None, plot, "outputs", False, solver=solver)
             if case:
                 session.append(case)
         except KeyboardInterrupt:
@@ -293,12 +319,19 @@ def main() -> None:
                    choices=["auto", *MODES], help="auto = recommended per network")
     p.add_argument("--price", type=int, default=1, choices=[0, 1])
     p.add_argument("--time", type=int, default=None, help="horizon (hours)")
+    p.add_argument("--solver", default=DEFAULT_SOLVER, choices=SOLVER_CHOICES,
+                   help=f"MILP solver (default {DEFAULT_SOLVER}, fallback {DEFAULT_FALLBACK})")
     p.add_argument("--plot", action="store_true")
     p.add_argument("--outdir", default="outputs")
     p.add_argument("--verbose", action="store_true")
     # kept for backward compatibility: --warmstart == --mode warmstart
     p.add_argument("--warmstart", action="store_true", help=argparse.SUPPRESS)
     a = p.parse_args()
+
+    if a.solver not in available_solvers():
+        print(f"error: solver {a.solver} is not installed. "
+              f"Available: {', '.join(available_solvers())}")
+        return
 
     mode = a.mode
     if a.warmstart and mode == "auto":
@@ -307,7 +340,7 @@ def main() -> None:
         mode = MODE_SUGGESTION[a.net][0]
         print(f"mode=auto -> using recommended '{mode}' for {NETWORKS[a.net].name}")
 
-    run_case(a.net, mode, a.price, a.time, a.plot, a.outdir, a.verbose)
+    run_case(a.net, mode, a.price, a.time, a.plot, a.outdir, a.verbose, solver=a.solver)
 
 
 if __name__ == "__main__":
