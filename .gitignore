@@ -13,6 +13,7 @@ venv/
 
 # Solver / run logs and outputs
 *.log
+outputs/
 Python/outputs/
 Python/results/
 
