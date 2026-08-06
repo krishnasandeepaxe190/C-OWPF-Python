@@ -142,8 +142,74 @@ def render_guide(st) -> None:
         st.info("Accuracy achieved (same-schedule replay): 8-node ≈ 0.15 ft, "
                 "3-node/Net1/Net2 ≈ 0.005–0.02 ft.")
 
+    # ---- power distribution ----
+    with st.expander("10 · Power side — LinDistFlow / Kekatos voltage model"):
+        st.markdown(
+            "Each radial feeder (IEEE-13 / IEEE-33 / SB-128) is reduced to a "
+            "single-phase model with the slack bus at index 0. The **squared** bus "
+            "voltages are an *affine* function of the net bus injections:")
+        st.latex(r"v^2 = R\,(-p_{\text{net}}) + X\,(-q_{\text{net}}) + V_k")
+        st.latex(r"F=-A^{-1},\quad R = 2F\,\mathrm{diag}(r)\,F^\top,\quad "
+                 r"X = 2F\,\mathrm{diag}(x)\,F^\top,\quad V_k = F a_0\, v_0^2")
+        st.markdown(
+            "with $A$ the reduced branch-bus incidence. This is the loss-less "
+            "LinDistFlow relaxation; it is convex (LP-friendly) and matches a full "
+            "nonlinear solve to a few $10^{-3}$ pu on moderate feeders.\n"
+            "- **Validation**: after a schedule is fixed we replay the injections "
+            "through the nonlinear **Z-bus** fixed-point power flow "
+            "($I=\\mathrm{conj}(S)/\\mathrm{conj}(V)$, $V=Y^{-1}I+w$) and report the "
+            "true voltages and the true loss $\\sum |I_\\ell|^2 r_\\ell$.\n"
+            "- **Voltage-dependent caps** (eq. 1b/2b): a shunt cap injects $q^s v_n$, "
+            "so $(I - X\\,\\mathrm{diag}(q^s))\\,v = R(-p)+X(-q)+V_k$; the "
+            "$(I-Q_{sx})^{-1}$ correction is folded into $R,X,V_k$ (matching "
+            "`func_branchbus.m`'s $V_{nsh}$), and $q_{net}$ then excludes caps. The "
+            "nonlinear Z-bus keeps them in the Y-bus.")
+
+    with st.expander("11 · Power OPF — PV reactive dispatch"):
+        st.markdown(
+            "PV **active** is fixed at the available solar; PV **reactive** $q^{pv}$ is "
+            "the control (smart-inverter Volt/VAr). With active known, the inverter "
+            "capability is an exact per-hour box:")
+        st.latex(r"|q^{pv}| \le \sqrt{S^2 - (p^{pv})^2},\qquad S = k\,P^{pv}_{\max}")
+        st.markdown(
+            "The standalone OPF holds $V_{\\min}\\le|V|\\le V_{\\max}$ (soft slacks) "
+            "while minimising the net reactive drawn from the substation "
+            "$\\sum|q_{\\text{net}}|$ — local reactive compensation, which cuts "
+            "reactive line flow and hence loss. The loss reduction is *reported* from "
+            "the Z-bus (with vs. without the setpoints), not linearised into the "
+            "objective.")
+
+    with st.expander("12 · Coupled C-OWPF — the interdependency"):
+        st.markdown(
+            "The pumps' electrical power couples the two grids. Each pump's "
+            "$P^{\\text{pump}}$ (kW) becomes a per-unit active load at its feeder bus "
+            "($\\Xi$ coupling) and also draws reactive $q^{\\text{pump}} = "
+            "P^{\\text{pump}}_{\\text{pu}}\\sqrt{1/PF^2-1}$, so the net injections are")
+        st.latex(r"p_{\text{net}} = \Psi p + \Xi\,P^{\text{pump}}_{\text{pu}} - \Gamma p^{pv},"
+                 r"\qquad q_{\text{net}} = \Psi q + \Xi\,q^{\text{pump}} - \Gamma q^{pv}")
+        st.markdown("**The objective is the paper's eq. 33d — pump energy + the cost of "
+                    "network losses**, both priced at the WDN electricity price:")
+        st.latex(r"\min\ \sum_t \pi_t\Big[\tfrac{1}{1000}\textstyle\sum_p P^{\text{pump}}_{p,t}"
+                 r"\;+\;\hat C^{\text{loss}}_t\Big],\qquad "
+                 r"\hat C^{\text{loss}}_t=\sum_\ell r_\ell\big(P_{\ell,t}^2+Q_{\ell,t}^2\big)")
+        st.markdown(
+            "The loss is convex-quadratic in the LinDistFlow branch flows and is "
+            "**linearized each iteration**, so every step stays an LP/MILP. This makes "
+            "PV reactive dispatch and pump timing worth **real dollars**. With the "
+            "schedule fixed it is a pure LP; with the schedule free the only integers "
+            "are the pump binaries — the feeder adds none.\n"
+            "- **Schedule search** is *cost- and voltage-aware*: each candidate is "
+            "scored on the true total cost (pump + loss) **and** voltage feasibility.\n"
+            "- **Warm-started trust-region MILP**: free binaries, warm-started at the "
+            "incumbent's linearisation, with a Hamming-distance cap of $K$ flips — the "
+            "MATLAB-style free-binary MILP made reliable (the trust region blocks the "
+            "far-away schedule flips a cold MILP would take on a stale linearisation).\n"
+            "- **Decoupled vs coupled**: the app runs both — optimise water blind then "
+            "impose it on the grid, vs. co-optimise — and compares cost against voltage "
+            "feasibility.")
+
     # ---- robustness ----
-    with st.expander("9 · Numerical robustness"):
+    with st.expander("13 · Numerical robustness"):
         st.markdown(
             "- **Adaptive Big-M** scaled per network from the head span and the "
             "*actual* EPANET flows (a fixed 1e7 ill-conditions HiGHS on Net3).\n"

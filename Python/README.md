@@ -1,13 +1,19 @@
-# FSP Optimal Water Flow (OWF) — Python
+# C-OWPF — Coupled Optimal Water-Power Flow (Python)
 
-Python translation of the water-side (WDN) **Optimal Water Flow** problem from the
-MATLAB C-OWPF code, restricted to **fixed-speed pumps (FSPs)**. VSP and PRV models
-are intentionally out of scope.
+Python implementation of the **Coupled Optimal Water-Power Flow** problem from the
+MATLAB C-OWPF code (IEEE Access-2024-18604), covering three problems:
 
-Each iteration of a **successive linear-approximation** loop is a **MILP** — linear
-objective and constraints with binary pump on/off variables — solved with
-**HiGHS** through **CVXPY**. EPANET `.inp` parsing and hydraulic ground-truth use
-**epyt** (the EPANET-Python-Toolkit, which mirrors the EPANET-MATLAB-Toolkit).
+- **💧 Water OWF** — schedule fixed-speed pumps (FSPs) to minimize energy cost.
+- **⚡ Power OPF** — dispatch PV **reactive** setpoints on a distribution feeder,
+  verified with a nonlinear **Z-bus** power flow for true voltages and true loss.
+- **🔗 Coupled C-OWPF** — co-optimize the two grids through the pumps' electrical
+  load, keeping the **paper's objective (pump-energy cost)**; the feeder enters as
+  voltage constraints and PV reactive is the control.
+
+Each iteration of a **successive linear-approximation** loop is a **MILP** (an LP
+once the pump schedule is fixed) — solved with **HiGHS** through **CVXPY**. The
+water physics is validated against **EPANET** (via **epyt**) and the power physics
+against a nonlinear **Z-bus** solve. VSP and PRV models are upcoming phases.
 
 ## Install & run
 
@@ -15,10 +21,10 @@ objective and constraints with binary pump on/off variables — solved with
 pip install -r requirements.txt
 
 # Windows: double-click Python\run_ui.bat  (installs deps on first run, opens the UI)
-streamlit run app.py          # WEB UI: case setup, interactive network map,
-                              # plots, case diff, CSV downloads, session table
+streamlit run app.py          # WEB UI — five tabs: Home · Water · Power · Coupled · Guide
+                              # appearance toggle: System / Light / Dark
 
-python main_owf.py            # INTERACTIVE: pick network, get a recommended mode,
+python main_owf.py            # WATER CLI: pick network, get a recommended mode,
                               # run, plot, and print the comparison table
 
 # or non-interactive:
@@ -80,18 +86,25 @@ Notes:
 
 ## Web UI (`streamlit run app.py`)
 
-- **Case setup** with per-network recommended modes and honest warnings
-- **Interactive network map** (Plotly): topology colored by element type
-  (junction / tank / reservoir / pipe / pump / bypass / closed), junction nodes
-  colored by pressure with an **hour slider**, hover tooltips with per-element
-  heads and flows
-- **Tabbed results**: map, schedule, flows, heads, convergence, error, solver log
-- **Case diff**: pick any two runs — metric table with Δ column and side-by-side
-  pump-schedule plots
-- **Downloads**: per-case CSVs (flows, heads, pump schedule, pump power) and the
-  session comparison table
-- Every run in a session accumulates into the comparison table; plots are stored
-  per-run so reruns never overwrite earlier cases
+Five tabs, plus a **System / Light / Dark** appearance toggle:
+
+- **🏠 Home** — paper intro, a flowchart of how the coupled problem is solved, an
+  **animation** of successive linearization converging (with a "why it's better"
+  explainer), the networks, and the key formulations.
+- **💧 Water** — the decoupled OWF: pick a network + mode (`direct` / `warmstart` /
+  `optimize` / `epanet`) + price; interactive network map, flow animation, schedule,
+  flows/heads/convergence/error plots, EPANET rules, per-case CSVs and a session
+  comparison table.
+- **⚡ Power** — the standalone reactive OPF on any feeder. DER controls: **PV
+  sizing** (Spv = k·Ppv,max), **# active PV sites**, voltage limits, optional water
+  **pump-load hand-off** (pump→bus connection). Outputs: feeder voltage map, voltage
+  profile (linear vs Z-bus), voltage heatmap, PV reactive dispatch, and **true loss**
+  (with vs without VAr support), plus a setpoints CSV.
+- **🔗 Coupled** — joint C-OWPF vs the decoupled hand-off, **cost/voltage/loss
+  compared**. Controls: water net, feeder, pump→bus, PV sizing/count, voltage limits,
+  and a **Fast / Thorough** search-effort switch (Fast is recommended for Net3 /
+  SB-128). Validates against EPANET (water) and Z-bus (power).
+- **📖 Guide** — the full methodology, including the power and coupled sections.
 
 ## Network status
 
@@ -159,25 +172,102 @@ and the tank integrator, and one linearization point isn't in a good basin. The
 
 For Net1 this picks the off-peak schedule and converges to ≈ 0.005 ft vs EPANET.
 
+## Power distribution (PDN)
+
+The `pdn` package models a radial single-phase feeder with the **LinDistFlow /
+Kekatos** linear voltage model — squared bus voltages are *affine* in the net
+injections, `v² = R(−p) + X(−q) + V_k` with `R = 2F·diag(r)·F′`, `X = 2F·diag(x)·F′`,
+`F = −A⁻¹` — so it stays convex (LP-friendly). A nonlinear **Z-bus** fixed-point
+power flow (`pdn.zbus_solve`, a port of `func_zbussan.m`) is the ground truth: it
+returns the true voltages and the true real loss `Σ|Iℓ|²rℓ`.
+
+`pdn.solve_pdn_opf` dispatches PV **reactive** setpoints (active fixed at available
+solar; capability `|q| ≤ √(S²−p²)`) to hold `Vmin ≤ |V| ≤ Vmax`, then verifies with
+the Z-bus and reports **loss with vs without** VAr support.
+
+Feeders (checked in under `pdn/feeders.py` + `pdn/feeders_paper.py`, self-contained):
+
+| key | feeder | buses | PV sites | source |
+|---|---|---|---|---|
+| `ieee13` | IEEE-13 | 12 | 5 | IEEE 13-node single-phase |
+| `ieee33` | IEEE-33 | 32 | 15 | Baran & Wu 33-bus |
+| `sb128`  | SB-128  | 128 | 27 | SB-128 test feeder (stressed) |
+| `sce47`  | SCE-47  | 47 | 5 | paper Table I / Fig. 5 |
+| `sce56`  | SCE-56  | 57 | 1 | paper Table II / Fig. 6 |
+
+The `ieee13/33/sb128` data is extracted from `Matlab/Codes/PDN Networks/*.mat`; the
+two SCE feeders are transcribed from the paper tables (MVA loads @pf 0.9, explicit
+PV/cap nameplates, tie lines dropped for the base radial config). All validate
+against the nonlinear Z-bus to < 0.01 pu on the healthy feeders.
+
+## Coupled C-OWPF
+
+The `coupled` package ties water to power: each pump's electrical power `P_pump`
+(kW) becomes a per-unit active load at its feeder bus (the paper's `Ξ` coupling),
+and the pump also draws reactive `q_pump = P_pump·√(1/PF²−1)`. The **objective is
+the paper's (eq. 33d) — pump energy plus the cost of network losses**, both priced
+at the WDN electricity price:
+
+```
+min  Σ_t π_t · [ (Σ_p Ppump)/1000  +  Ĉloss_t ] ,   Ĉloss_t = Σ_ℓ r_ℓ (P_ℓ² + Q_ℓ²)
+```
+
+The loss is a convex quadratic in the LinDistFlow branch flows `P_ℓ = Σ_{k∈subtree} p_net`;
+it is **linearized around the current flows each iteration** (same successive-
+approximation idea as the water side), so every step stays an LP/MILP. This is what
+makes PV reactive dispatch and pump timing worth **real dollars** — the tool reports
+pump / loss / total cost and the coupled-vs-decoupled saving.
+
+**Shunt caps are voltage-dependent** (paper eq. 1b/2b): the cap injects `qˢ·vₙ`, so
+`(I − X·diag(qˢ)) v = R(−p)+X(−q)+V_k` — the `(I−Qsx)⁻¹` correction is folded into
+`R,X,V_k` (matching `func_branchbus.m`'s `V_nsh`), and `q_net` then excludes caps.
+
+With the schedule fixed the coupled problem is a pure **LP**; with the schedule free
+the only integers are the pump binaries (the feeder adds none).
+
+- `solve_coupled` — the coupled successive-linearization loop (LP/MILP).
+- `optimize_coupled_schedule` — **voltage-aware** schedule search: each candidate is
+  scored on the true pump cost **and** the coupled voltage feasibility, then a
+  **warm-started trust-region MILP** (free binaries, Hamming-distance cap from the
+  incumbent) and a 1-opt polish. A `Fast` path (fewer candidates, no MILP) keeps
+  Net3 / SB-128 tractable; the final result is guaranteed **never worse than the
+  decoupled** baseline.
+- `validate_coupled` — replays the schedule in EPANET (water ΔH) and the injections
+  in the Z-bus (voltage error, true loss).
+
+Typical: water ΔHead ≈ 0.02 ft, power ΔV ≈ 0.005–0.013 pu; coupled beats the
+decoupled hand-off on voltage feasibility at equal or lower pump cost.
+
 ## Layout
 
 ```
 Python/
-├── main_owf.py                 # entry point            ≈ Main_OWF_IEEE_ACCESS.m
-├── owf/
+├── app.py                      # Streamlit app: Home · Water · Power · Coupled · Guide
+├── main_owf.py                 # water CLI            ≈ Main_OWF_IEEE_ACCESS.m
+├── owf/                        # WATER side (successive-linearization MILP)
 │   ├── config.py               # network specs, pump curves, prices, solver settings
 │   ├── epanet_io.py            # read_inp.m + init_epanet.m   (via epyt)
 │   ├── connection_matrices.py  # ConnectionMatrices_WDN.m  (Pi, Λ, Θ, Τ, Κ, Ω, Δ …)
-│   ├── network.py              # WDN_setup_IEEE_ACCESS.m + definebounds_WDN.m
-│   ├── initial_values.py       # Initial_Values_WDN.m
-│   ├── linearization.py        # CalculateNewIterationValues.m
+│   ├── network.py · initial_values.py · linearization.py
 │   ├── constraints.py          # every define*_CVX.m  → one function
 │   ├── solver.py               # WDN_OWF_IEEEACCESS_cvx.m  (the MILP loop)
-│   ├── warmstart.py            # EPANET multi-start warm-start for looped nets
-│   ├── validation.py           # EPANET error-norm + schedule-imposed check
-│   └── plots.py                # convergence / flow / head / schedule plots
-├── data/eightnode/…            # EPANET .inp (self-contained)
-└── tests/test_eightnode.py
+│   ├── warmstart.py · validation.py · plots.py · netmap.py
+├── pdn/                        # POWER side
+│   ├── feeders.py · feeders_paper.py   # feeder data (self-contained)
+│   ├── lindistflow.py          # Kekatos linear voltage model
+│   ├── powerflow.py            # nonlinear Z-bus + true loss  (func_zbussan.m)
+│   ├── network.py              # PDN object, PV sizing, solar profile
+│   └── opf.py                  # standalone reactive-power OPF
+├── coupled/                    # COUPLED C-OWPF
+│   ├── config.py               # feeder + coupling + DER settings
+│   ├── coupled_lp.py           # coupled successive-linearization loop
+│   ├── schedule.py             # voltage-aware search + trust-region MILP
+│   ├── validation.py           # EPANET + Z-bus cross-check, true loss
+│   └── runner.py
+├── ui/                         # Streamlit sections (theme, landing, water, power, coupled, plots)
+├── guide.py                    # methodology (water + power + coupled)
+├── data/…                      # EPANET .inp files (self-contained)
+└── tests/                      # test_eightnode.py … test_coupled.py
 ```
 
 ## MATLAB → Python map
@@ -241,5 +331,12 @@ Two levels, both in `validation.py`:
 - **Net1 warm-start**: see the "Warm-start" section. `SolverConfig` exposes the
   knobs: `damping` (trust-region blend of the linearization point), `soft_bounds`
   + `penalty_*` (penalty CCP), and `fixed_schedule` (pin the pump binaries).
-- **Out of scope**: VSPs, PRVs, and the power-network (PDN) coupling.
+- **Power coupling**: the PDN voltage model is the Kekatos LinDistFlow relaxation
+  with **voltage-dependent shunt caps** (`qˢ·v`, eq. 1b/2b) folded into `R,X,V_k`;
+  the loss term uses the lossless branch-flow approximation and is linearized each
+  iteration. The nonlinear **Z-bus** replay (caps in the Y-bus) is the ground truth
+  the linear model is checked against. PV active is fixed at available solar; PV
+  **reactive** is the control. Voltage limits are hard, with an optional soft-slack
+  feasibility device (the same one used for water head bounds — not an economic term).
+- **Upcoming phases**: VSPs and PRVs (labeled "coming next" in the app).
 ```
