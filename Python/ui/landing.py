@@ -4,7 +4,24 @@ from __future__ import annotations
 
 import numpy as np
 
+from pathlib import Path
+
 from .theme import WATER, POWER, COUPLED, GOOD, BAD, hero, section_header
+
+_DOCS = Path(__file__).resolve().parent.parent / "docs"
+
+
+def _method_note_download(st) -> None:
+    """Offer the one-page 'how each solve mode is derived in code' transparency note."""
+    pdf = _DOCS / "solve_modes.pdf"
+    if not pdf.exists():
+        return
+    st.caption("📄 **Transparency note** — how each solve mode is derived in code "
+               "(decoupled water modes, the coupled schedule search, and the "
+               "warm-started trust-region MILP), with a flowchart and a code map.")
+    st.download_button("⬇  Download the one-page method note (PDF)",
+                       data=pdf.read_bytes(), file_name="C-OWPF_solve_modes.pdf",
+                       mime="application/pdf", key="dl_method_note")
 
 
 # ------------------------------------------------------------------ flowchart
@@ -170,6 +187,7 @@ def render_landing(st) -> None:
                    "the feeder. The solver linearizes the nonlinear physics, solves a "
                    "tractable step, and relinearizes until it converges.")
     st.markdown(_flowchart_svg(), unsafe_allow_html=True)
+    _method_note_download(st)
 
     section_header(st, POWER, "Why successive approximation")
     c1, c2 = st.columns([1.05, 1])
