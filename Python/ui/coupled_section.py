@@ -23,7 +23,8 @@ from owf.warmstart import optimize_schedule as water_optimize, epanet_default_on
 from .theme import COUPLED, section_header
 from . import pdn_plots as P
 
-NET_LABELS = {8: "8-node", 3: "3-node", 11: "Net1", 36: "Net2", 97: "Net3"}
+NET_LABELS = {8: "8-node", 3: "3-node", 11: "Net1", 36: "Net2", 97: "Net3",
+              126: "BWSN (large)"}
 
 
 @_st.cache_data(show_spinner=False)
@@ -41,7 +42,7 @@ def render_coupled(st) -> None:
                    "paper's pump-energy cost; PV reactive holds voltages.")
 
     r1 = st.columns([1, 1, 1, 1])
-    net = r1[0].selectbox("Water network", [8, 3, 11, 36, 97], format_func=NET_LABELS.get,
+    net = r1[0].selectbox("Water network", [8, 3, 11, 36, 97, 126], format_func=NET_LABELS.get,
                           key="cpl_net",
                           help="8-node / 3-node solve in seconds; Net1/Net2 take longer; "
                                "Net3 is heavy (large network + many schedule evaluations).")
@@ -61,7 +62,7 @@ def render_coupled(st) -> None:
     pv_sizing = r2[0].slider("PV sizing Spv=k·Ppv", 1.0, 1.6, 1.2, 0.05, key="cpl_size")
     vmin = r2[1].number_input("Vmin (pu)", 0.85, 1.0, 0.95, 0.01, key="cpl_vmin")
     vmax = r2[2].number_input("Vmax (pu)", 1.0, 1.15, 1.05, 0.01, key="cpl_vmax")
-    heavy = (net == 97) or (feeder == "sb128") or (net in (11, 36))
+    heavy = (net in (97, 126)) or (feeder == "sb128") or (net in (11, 36))
     effort = r2[3].selectbox("Search effort", ["Fast", "Thorough"],
                              index=0 if heavy else 1, key="cpl_effort",
                              help="Fast: EPANET baseline + light polish (recommended for "
@@ -115,10 +116,13 @@ def render_coupled(st) -> None:
         opt_kw = dict(verbose=False, inner_iter=8 if fast else 15,
                       polish=not fast, max_flips=6 if fast else 20, use_milp=not fast)
         if fast and heavy:
-            # minimal candidate set on big networks: baseline + 2 price quantiles
+            # minimal candidate set on big networks: the tank-safe load-shift plus
+            # two price quantiles (load_shift is the feasible saver on high-duty
+            # systems like BWSN; the quantiles under-pump and drain tanks there).
             from owf.warmstart import price_threshold_schedules
             allc = price_threshold_schedules(wdn)
-            opt_kw["candidates"] = {k: allc[k] for k in ("cheapest_40pct", "cheapest_60pct")
+            opt_kw["candidates"] = {k: allc[k] for k in
+                                    ("load_shift", "cheapest_40pct", "cheapest_60pct")
                                     if k in allc}
         cpl, cpl_info = optimize_coupled_schedule(wdn, pdn, cc, **opt_kw)
 
