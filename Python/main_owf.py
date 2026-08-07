@@ -182,6 +182,49 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
     if vsp:
         result = solve_owf(wdn)
         note = f"VSP direct solve; speed in [{min(v[0] for v in vsp.values()):.2f},1.0]"
+        # Polish: the free-binary VSP (+PRV) solve can hit the iteration cap while
+        # the linearization is still moving. Iterate fix-schedule -> EPANET replay
+        # -> reconverge from the replay-consistent point, and keep whichever
+        # candidate (INCLUDING the original) replays best in EPANET -- monotone by
+        # construction (never adopts a polish that widens the replay error).
+        if result.flows is not None:
+            try:
+                from dataclasses import replace as _replace
+                from owf.epanet_io import simulate_with_schedule
+                from owf.linearization import linearize, stack_eps
+
+                pl = (wdn.raw.link_pump_index + 1).tolist()
+                bl = [(int(lk) + 1, int(np.argmax(wdn.M.S_bypass_pump[i])))
+                      for i, lk in enumerate(wdn.M.bypass_index)]
+
+                def _replay_err(res):
+                    s = np.round(res.onoff)
+                    h_ep, f_ep = simulate_with_schedule(
+                        wdn.spec.inp_path, pl, s, wdn.time, wdn.n_nodes,
+                        wdn.n_links, bypass_links=bl, pump_speeds=res.speed)
+                    return float(np.max(np.abs(h_ep - res.heads[:, :wdn.time]))), h_ep, f_ep
+
+                best_err, h_ep, f_ep = _replay_err(result)
+                cur = result
+                for _ in range(2):
+                    sched = np.round(cur.onoff)
+                    # pin schedule AND speeds: with omega fixed, WW = omega*f is
+                    # exact, so the reconverge cannot drift off the replay point
+                    cfg2 = _replace(wdn.config, fixed_schedule=sched,
+                                    fixed_speed=cur.speed, damping=0.7, max_iter=40)
+                    wdn2 = _replace(wdn, config=cfg2)
+                    lin = linearize(f_ep, wdn.M, wdn.pump, speed=cur.speed)
+                    r2 = solve_owf(wdn2, lin_override=lin,
+                                   eps_override=stack_eps(h_ep, f_ep, sched))
+                    if r2.flows is None:
+                        break
+                    err2, h2, f2 = _replay_err(r2)
+                    if err2 < best_err - 1e-6:
+                        result, best_err = r2, err2
+                        note += f"; polished (replay {err2:.2f} ft)"
+                    cur, h_ep, f_ep = r2, h2, f2
+            except Exception:
+                pass
     elif mode == "direct":
         result = solve_owf(wdn)
     elif mode == "warmstart":

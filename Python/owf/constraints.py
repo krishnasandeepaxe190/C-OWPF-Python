@@ -167,6 +167,16 @@ def vsp_speed_mccormick(model, wdn):
         return []
     T = wdn.time
     p = wdn.pump
+    # Pinned speeds (VSP polish): omega is a given constant per (pump, hour), so
+    # WW = omega*f is EXACT -- the McCormick envelope is replaced by equalities.
+    fs = getattr(wdn.config, "fixed_speed", None)
+    if fs is not None:
+        FS = np.asarray(fs, dtype=float)[:, :T]
+        pf = wdn.M.Lambda @ model.Flows
+        return [
+            model.Speed == cp.multiply(FS, model.OnOff),
+            model.WW == cp.multiply(FS, pf),
+        ]
     Mbig = wdn.config.big_m
     omin = np.tile(p.omega_min[:, None], (1, T))
     omax = np.tile(p.omega_max[:, None], (1, T))
