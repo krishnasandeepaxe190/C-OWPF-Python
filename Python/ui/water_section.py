@@ -100,17 +100,17 @@ def _render_case(st, rec) -> None:
     tab_names = ["Network map", "Flow animation", "Schedule", "Flows", "Heads",
                  "Convergence", "Error", "Solver log", "Download"]
     if has_prv:
-        tab_names.insert(2, "PRV")
+        # appended LAST so the fixed tab indices below (0..8) stay valid
+        tab_names.append("🔻 PRV")
     tabs = st.tabs(tab_names)
     if has_prv:
-        with tabs[2]:
+        with tabs[9]:
             st.plotly_chart(rec["prv_fig"], use_container_width=True,
                             key=f"prv_{rec['id']}")
             st.caption("Three-state PRV (closed / open / active): when **active** the "
                        "valve pins its downstream junction to h_set by absorbing "
                        "R_PRV of head; ✕ markers are EPANET's replay of the same "
                        "schedule — the model matches the exact hydraulics.")
-        tabs = [tabs[0], tabs[1]] + tabs[3:]          # renumber for the code below
     with tabs[0]:
         md = rec["map_data"]
         if "flows" in md:
