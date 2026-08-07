@@ -101,18 +101,19 @@ def solve_multistart(
     return results[best_name], best_name, results
 
 
-def true_energy_cost(wdn: WDN, flows: np.ndarray) -> float:
-    """Energy cost using the TRUE nonlinear FSP power (not the linearized model).
+def true_energy_cost(wdn: WDN, flows: np.ndarray, speed: np.ndarray = None) -> float:
+    """Energy cost using the TRUE nonlinear pump power (not the linearized model).
 
     This is the honest basis for comparing two schedules -- the per-iteration
     objective uses linearized power, which differs slightly between linearization
-    points.
+    points. ``speed`` (Pu x T) applies the variable-speed power form on VSP pumps.
     """
     if flows is None:
         return float("inf")
-    q = wdn.M.Lambda @ flows[:, : wdn.time]
-    p = wdn.pump
-    power = p.c_m * (p.h0[:, None] - p.r_m[:, None] * np.abs(q) ** p.v_m[:, None]) * q
+    from .solver import _true_pump_power
+    T = wdn.time
+    sp = speed[:, :T] if speed is not None else None
+    power = _true_pump_power(wdn, flows[:, :T], sp)
     return float(wdn.price_final @ (power.sum(axis=0) / 1000.0))
 
 

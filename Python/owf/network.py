@@ -82,6 +82,10 @@ class WDN:
     def n_junctions(self) -> int:
         return len(self.raw.junction_index)
 
+    @property
+    def n_vsp(self) -> int:
+        return int(np.sum(self.pump.is_vsp))
+
 
 def _pump_params(raw: RawNetwork, spec: cfg.NetworkSpec) -> PumpParams:
     # Prefer an explicit config override; otherwise use EPANET-derived coefficients.
@@ -155,6 +159,25 @@ def _resolve_bypasses(raw: RawNetwork, spec: cfg.NetworkSpec):
     return np.array(bidx, dtype=int), np.array(ppos, dtype=int)
 
 
+def _resolve_vsp(raw: RawNetwork, pump: PumpParams, config: SolverConfig) -> None:
+    """Mark which pumps are variable-speed (in place) from ``config.vsp_pumps``.
+
+    ``config.vsp_pumps`` maps a pump link id to its (omega_min, omega_max) bounds.
+    Unlisted pumps stay fixed-speed (omega == 1), i.e. the FSP model.
+    """
+    vsp = getattr(config, "vsp_pumps", None)
+    if not vsp:
+        return
+    names = list(raw.link_name_id)
+    for pid, bounds in vsp.items():
+        p_link = names.index(str(pid))
+        pos = int(np.where(raw.link_pump_index == p_link)[0][0])
+        omin, omax = (float(bounds[0]), float(bounds[1])) if bounds else (0.8, 1.0)
+        pump.is_vsp[pos] = True
+        pump.omega_min[pos] = omin
+        pump.omega_max[pos] = omax
+
+
 def _resolve_availability(raw: RawNetwork, spec: cfg.NetworkSpec) -> dict:
     """Map spec.pump_availability {pump_id: (start,end)} to {pump_pos: (start,end)}."""
     if not spec.pump_availability:
@@ -190,6 +213,7 @@ def setup(config: SolverConfig) -> WDN:
     time = int(min(time, sim_steps))
 
     pump = _pump_params(raw, spec)
+    _resolve_vsp(raw, pump, config)      # mark variable-speed pumps (if any)
     tank = _tank_params(raw, time)
     bounds = _bounds(raw, tank, time)
     price_final = _price(config, time)

@@ -105,7 +105,7 @@ def validate_schedule(wdn: WDN, result: OWFResult) -> ScheduleValidationReport:
     ]
     heads_ep, flows_ep = simulate_with_schedule(
         wdn.spec.inp_path, pump_links, result.onoff, T, wdn.n_nodes, wdn.n_links,
-        bypass_links=bypass_links,
+        bypass_links=bypass_links, pump_speeds=result.speed,
     )
 
     dh = heads_ep - result.heads[:, :T]

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import streamlit as _st
 
 from owf import NETWORKS
 from owf.config import (DEFAULT_FALLBACK, DEFAULT_SOLVER, SOLVER_CHOICES,
@@ -26,6 +27,15 @@ def _csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv().encode()
 
 
+@_st.cache_data(show_spinner=False)
+def _pump_ids(net: int) -> list:
+    """Pump link ids for a water net (cached; used to pick variable-speed pumps)."""
+    from owf.config import SolverConfig
+    from owf.network import setup as _setup
+    w = _setup(SolverConfig(net_num=net, time=24))
+    return [str(w.raw.link_name_id[i]) for i in w.raw.link_pump_index]
+
+
 def _build_exports(case, wdn, result) -> dict:
     T = wdn.time
     hours = [f"h{t}" for t in range(T)]
@@ -37,6 +47,9 @@ def _build_exports(case, wdn, result) -> dict:
     pump_ids = [link_ids[i] for i in wdn.raw.link_pump_index]
     out["pump_schedule.csv"] = _csv_bytes(pd.DataFrame(result.onoff[:, :T], index=pump_ids, columns=hours).astype(int))
     out["pump_power_kw.csv"] = _csv_bytes(pd.DataFrame(result.ppump_true[:, :T], index=pump_ids, columns=hours).round(3))
+    if getattr(result, "speed", None) is not None:
+        out["pump_speed.csv"] = _csv_bytes(
+            pd.DataFrame(result.speed[:, :T], index=pump_ids, columns=hours).round(3))
     return out
 
 
@@ -131,6 +144,22 @@ def _controls(st):
                 "Use **optimize** — its binary fixed-speed pumps must switch OFF when a "
                 "tank is full (EPANET throttles instead), so 'epanet' mode overfills a "
                 "tank. Optimize takes a few minutes.")
+    # --- Variable-speed pumps (VSP) --------------------------------------------
+    vsp = None
+    with st.expander("⚙️ Variable-speed pumps (VSP)"):
+        st.caption("Mark pumps to run at **variable speed**: the solver co-optimizes "
+                   "each pump's relative speed ω ∈ [ω_min, 1]. Running at reduced speed "
+                   "cuts energy (power ∝ ω³) when the head allows it. Unlisted pumps stay "
+                   "fixed-speed. VSP uses a soft-bound damped **direct** solve.")
+        ids = _pump_ids(net)
+        vsp_sel = st.multiselect("Pumps to run as variable-speed", ids, key="w_vsp_sel")
+        omin = st.slider("Minimum relative speed ω_min", 0.50, 1.0, 0.80, 0.05,
+                         key="w_vsp_omin",
+                         help="Lower bound on relative pump speed when running.")
+        if vsp_sel:
+            vsp = {p: (float(omin), 1.0) for p in vsp_sel}
+            st.info(f"VSP active on {len(vsp)} pump(s); mode is overridden to the "
+                    f"direct VSP solve.")
     with st.expander("EPANET operating rules (cost baseline)"):
         cr = read_controls_rules(NETWORKS[net].inp_path)
         if cr["CONTROLS"]:
@@ -145,23 +174,27 @@ def _controls(st):
     if b2.button("Clear water history", use_container_width=True, key="w_clear"):
         st.session_state.water_records = []
         st.rerun()
-    return net, mode, price, solver, run
+    return net, mode, price, solver, run, vsp
 
 
 def render_water(st) -> None:
     if "water_records" not in st.session_state:
         st.session_state.water_records = []
-    net, mode, price, solver, run = _controls(st)
+    net, mode, price, solver, run, vsp = _controls(st)
 
     if run:
         eta = {"direct": "a few seconds", "warmstart": "up to a minute",
                "epanet": "~30-60 s", "optimize": "1-3 minutes"}[mode]
-        with st.spinner(f"Solving {NETWORKS[net].name} in {mode} mode ({eta})..."):
+        if vsp:
+            eta = "up to a minute (VSP)"
+        label = f"{mode} mode" if not vsp else "VSP direct solve"
+        with st.spinner(f"Solving {NETWORKS[net].name} in {label} ({eta})..."):
             log_buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(log_buf):
                     case, wdn, result = run_case(net, mode, price, None, plot=True,
-                                                 outdir="outputs", verbose=False, solver=solver)
+                                                 outdir="outputs", verbose=False,
+                                                 solver=solver, vsp=vsp)
             except Exception as exc:
                 st.error(f"Case failed: {exc}")
                 case = None

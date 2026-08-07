@@ -130,11 +130,20 @@ class SolverConfig:
     #    zero as the linearization improves. penalty_growth ramps the weight.
     damping: float = 1.0
     fixed_schedule: Optional["np.ndarray"] = None  # if set, pump OnOff is fixed to it
+    # Variable-speed pumps: {pump_id: (omega_min, omega_max)}. Listed pumps run at
+    # variable speed with the given relative-speed bounds; unlisted pumps are fixed
+    # speed. Empty/None -> all fixed-speed (the FSP model, unchanged).
+    vsp_pumps: Optional[dict] = None
     soft_bounds: bool = False
     penalty_weight: float = 1.0e3
     penalty_growth: float = 2.0
     penalty_max: float = 1.0e7
     feas_tol: float = 1.0e-3   # max slack accepted as "feasible" when soft_bounds
+    # VSP-only: the McCormick relaxation gives a slowly-contracting flow iterate, so
+    # convergence is also declared when the objective is stable over 3 iterations
+    # (relative change <= obj_rtol) and the solution is bound-feasible. FSP is
+    # unaffected -- it converges on the iterate norm first.
+    obj_rtol: float = 1.0e-3
     solver: str = "HIGHS"
     # Tried in order if the primary solver fails numerically on an iterate.
     # SCIP handles some ill-conditioned MILPs that HiGHS reports as UNKNOWN.

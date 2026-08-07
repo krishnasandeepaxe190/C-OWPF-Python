@@ -232,7 +232,7 @@ def read_inp(inp_path) -> RawNetwork:
 
 def simulate_with_schedule(
     inp_path, pump_links_1based, onoff: np.ndarray, time: int,
-    n_nodes: int, n_links: int, bypass_links=None,
+    n_nodes: int, n_links: int, bypass_links=None, pump_speeds: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Impose a pump on/off schedule in EPANET and return the true hydraulics.
 
@@ -245,6 +245,10 @@ def simulate_with_schedule(
     switched bypasses: each is opened exactly when its pump is off. Without this,
     deleting the controls would leave a bypass stuck at its initial status and the
     simulation would be meaningless (e.g. Net3's pipe 330).
+
+    ``pump_speeds`` (Pu x T, optional) imposes each pump's relative speed for
+    variable-speed pumps; when given, a running pump's EPANET setting is set to its
+    scheduled speed (fixed-speed pumps use speed 1).
     """
     from epyt import epanet
 
@@ -266,7 +270,15 @@ def simulate_with_schedule(
     while tstep > 0:
         idx = min(int(round(t_cur / 3600.0)), time - 1)
         for p, lk in enumerate(pump_links_1based):
-            d.setLinkStatus(lk, 1 if onoff[p, idx] > 0.5 else 0)
+            on = onoff[p, idx] > 0.5
+            # Status FIRST: setLinkStatus(open) resets a pump's setting to 1.0, so
+            # the relative speed must be imposed AFTER opening the pump.
+            d.setLinkStatus(lk, 1 if on else 0)
+            if on and pump_speeds is not None:
+                try:
+                    d.setLinkSettings(lk, float(pump_speeds[p, idx]))
+                except Exception:
+                    pass
         for lk, p in (bypass_links or []):
             # bypass open exactly when its pump is off
             d.setLinkStatus(lk, 0 if onoff[p, idx] > 0.5 else 1)
@@ -309,6 +321,36 @@ def read_controls_rules(inp_path) -> dict:
     except OSError:
         pass
     return sections
+
+
+def epanet_pump_speeds(raw: RawNetwork, time: int) -> np.ndarray:
+    """Pump relative speeds EPANET applies under the network's own controls.
+
+    Reads the link *Setting* time series from EPANET's native extended-period run
+    (``getComputedTimeSeries().Setting``) for the pump links, so that a network
+    whose ``.inp`` schedules variable speed -- via ``[CONTROLS] LINK p SETTING s``,
+    ``[RULES]``, or a speed pattern -- has an honest baseline. This is convention-
+    agnostic: EPANET reports the *applied* relative speed however the control was
+    written. Returns (n_pumps x time); off hours (setting ~ 0) are reported as 1.0
+    (the pump flow is zero there, so the value does not affect energy).
+    """
+    from epyt import epanet
+
+    n_pumps = len(raw.link_pump_index)
+    d = epanet(str(raw.inp_path))
+    try:
+        setting = np.asarray(d.getComputedTimeSeries().Setting, dtype=float)
+    except Exception:
+        setting = None
+    finally:
+        d.unload()
+    if setting is None or setting.ndim != 2:
+        return np.ones((n_pumps, time))    # no Setting series -> assume full speed
+    steps = min(time, setting.shape[0])
+    sp = setting[:steps, raw.link_pump_index].T          # (n_pumps x steps)
+    if steps < time:
+        sp = np.pad(sp, ((0, 0), (0, time - steps)), mode="edge")
+    return np.where(sp > 1e-6, sp, 1.0)
 
 
 def run_epanet(raw: RawNetwork) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

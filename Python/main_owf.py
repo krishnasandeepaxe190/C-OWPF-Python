@@ -120,13 +120,29 @@ class CaseResult:
 
 def run_case(net: int, mode: str, price: int, horizon, plot: bool,
              outdir: str, verbose: bool,
-             solver: str = "HIGHS") -> tuple[Optional[CaseResult], object, object]:
-    """Construct and solve one case; returns (CaseResult, wdn, result)."""
+             solver: str = "HIGHS",
+             vsp: dict = None) -> tuple[Optional[CaseResult], object, object]:
+    """Construct and solve one case; returns (CaseResult, wdn, result).
+
+    ``vsp`` maps a pump id to its (omega_min, omega_max) speed bounds; listed
+    pumps run at variable speed. When any VSP is present the case uses a
+    soft-bound, damped direct solve (the McCormick relaxation needs it).
+    """
     label = f"{NETWORKS[net].name}/{mode}/{'TOU' if price == 1 else 'flat'}"
+    if vsp:
+        label += f"/VSP{len(vsp)}"
     print(f"\n=== case: {label}  (solver={solver}) ===")
     t0 = _time.time()
 
-    if mode in ("warmstart",):
+    if vsp:
+        # Variable-speed pumps: the bilinear McCormick relaxation needs the soft-
+        # bound / damped homotopy to converge; run a single direct solve.
+        wdn = setup(SolverConfig(
+            net_num=net, price_choice=price, time=horizon, vsp_pumps=vsp,
+            soft_bounds=True, damping=0.5, penalty_weight=1e3, penalty_growth=1.5,
+            max_iter=80, feas_tol=0.5, verbose=verbose, solver=solver,
+            fallback_solvers=_fallbacks(solver)))
+    elif mode in ("warmstart",):
         wdn = setup(_warmstart_config(net, price, horizon, solver))
     else:
         wdn = setup(SolverConfig(net_num=net, price_choice=price, time=horizon,
@@ -139,12 +155,19 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
     # schedule from the optimizer). This is the only place EPANET's rule-based
     # operation is used, and it is used for cost only -- never for head/flow
     # error, since the schedules differ.
-    from owf.epanet_io import run_epanet
+    from owf.epanet_io import run_epanet, epanet_pump_speeds
     flows_ep, _, _, _ = run_epanet(wdn.raw)
-    epanet_cost = true_energy_cost(wdn, flows_ep[: wdn.time].T)
+    # Use the pump speeds EPANET actually applied (from its own SETTING controls),
+    # so a network that schedules variable speed has an honest baseline. For pumps
+    # that run at full speed this is 1.0 and the cost is unchanged.
+    base_speed = epanet_pump_speeds(wdn.raw, wdn.time)
+    epanet_cost = true_energy_cost(wdn, flows_ep[: wdn.time].T, speed=base_speed)
 
     note = ""
-    if mode == "direct":
+    if vsp:
+        result = solve_owf(wdn)
+        note = f"VSP direct solve; speed in [{min(v[0] for v in vsp.values()):.2f},1.0]"
+    elif mode == "direct":
         result = solve_owf(wdn)
     elif mode == "warmstart":
         result, sched_name = solve_warmstart(wdn, verbose=verbose)
@@ -176,7 +199,7 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
                            epanet_cost=epanet_cost, note=f"failed: {result.status}"),
                 wdn, result)
 
-    owf_cost = true_energy_cost(wdn, result.flows)
+    owf_cost = true_energy_cost(wdn, result.flows, speed=result.speed)
     savings = 100.0 * (epanet_cost - owf_cost) / epanet_cost if epanet_cost else 0.0
 
     # honest check: re-simulate the resulting schedule in EPANET

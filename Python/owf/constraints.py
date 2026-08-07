@@ -116,30 +116,79 @@ def pump_flow(model, wdn):
     ]
 
 
+def _head_gain(model, wdn, pump_flows):
+    """Linearized pump head gain C1M(+ *omega) + C2M f.
+
+    FSP: C1M + C2M f (C1M = -h0).  VSP: C1M*omega + C2M f (C1M = -h0<omega>).
+    The two forms coincide for FSP because there omega is pinned to OnOff and
+    C1M = -h0, so C1M*OnOff = -h0 when the pump runs (and the bound is relaxed off).
+    """
+    if model.Speed is None:
+        return model.C1M + cp.multiply(model.C2M, pump_flows)
+    return cp.multiply(model.C1M, model.Speed) + cp.multiply(model.C2M, pump_flows)
+
+
 def pump_negative_headloss(model, wdn):
-    """C1M + C2M (Lambda Q) <= 0."""
-    return [model.C1M + cp.multiply(model.C2M, wdn.M.Lambda @ model.Flows) <= 0]
+    """Head gain is nonnegative:  C1M(*omega) + C2M (Lambda Q) <= 0."""
+    return [_head_gain(model, wdn, wdn.M.Lambda @ model.Flows) <= 0]
 
 
 def pump_power(model, wdn):
-    """Ppump == A'(Lambda Q) + B' OnOff  (linearized FSP power)."""
+    """Ppump == A'(Lambda Q) + B' OnOff (+ D' WW for VSP)  (linearized pump power)."""
     pump_flows = wdn.M.Lambda @ model.Flows
-    return [
-        model.Ppump
-        == cp.multiply(model.APrime, pump_flows) + cp.multiply(model.BPrime, model.OnOff)
-    ]
+    expr = cp.multiply(model.APrime, pump_flows) + cp.multiply(model.BPrime, model.OnOff)
+    if model.Speed is not None:
+        # VSP adds the bilinear omega*f term via the McCormick aux WW; DPrime is
+        # zero on FSP rows, so their power is unchanged.
+        expr = expr + cp.multiply(model.DPrime, model.WW)
+    return [model.Ppump == expr]
 
 
 def pump_bigm(model, wdn):
     """Big-M pump head-gain curve, enforced only when OnOff == 1."""
     M_big = wdn.config.big_m
     LambdaPiT = wdn.M.Lambda @ wdn.M.Pi.T          # (Pu x N)
-    expr = (LambdaPiT @ model.Heads) - (
-        model.C1M + cp.multiply(model.C2M, wdn.M.Lambda @ model.Flows)
-    )
+    expr = (LambdaPiT @ model.Heads) - _head_gain(model, wdn, wdn.M.Lambda @ model.Flows)
     return [
         expr >= M_big * (model.OnOff - 1),
         expr <= M_big * (1 - model.OnOff),
+    ]
+
+
+def vsp_speed_mccormick(model, wdn):
+    """Variable-speed pump: speed bounds gated by on/off, and the McCormick
+    envelope of the bilinear WW = omega * (pump flow).
+
+    Applies to every pump when a VSP is present. FSP pumps have omega_min =
+    omega_max = 1, so the speed bounds pin omega = OnOff and the envelope pins
+    WW = pump flow exactly -- leaving their power (DPrime = 0) unchanged.
+    """
+    if model.Speed is None:
+        return []
+    T = wdn.time
+    p = wdn.pump
+    Mbig = wdn.config.big_m
+    omin = np.tile(p.omega_min[:, None], (1, T))
+    omax = np.tile(p.omega_max[:, None], (1, T))
+    fmax = np.tile(p.max_flow[:, None], (1, T))    # f_min = 0
+    pf = wdn.M.Lambda @ model.Flows
+    Speed, WW = model.Speed, model.WW
+    off = 1 - model.OnOff
+    # McCormick corners are valid for omega in [omin, omax]; when the pump is OFF,
+    # omega = 0 lies outside that box, so the two corners that carry an omega-lower-
+    # bound constant (-omega*fmax) are gated by big-M and become inactive. The
+    # ungated `WW <= omax*f` still pins WW = 0 when off (f = 0), which is correct.
+    return [
+        # speed only exists when the pump runs
+        Speed >= cp.multiply(omin, model.OnOff),
+        Speed <= cp.multiply(omax, model.OnOff),
+        # McCormick under/over estimators of WW = omega * f  (f_min = 0). Row 1
+        # keeps WW >= 0 (and = 0 with row 3 when off); row 4 carries the omega-
+        # lower-bound corner and is gated so it relaxes when the pump is off.
+        WW >= cp.multiply(omin, pf),
+        WW >= cp.multiply(omax, pf) + cp.multiply(fmax, Speed) - omax * fmax,
+        WW <= cp.multiply(omax, pf),
+        WW <= cp.multiply(fmax, Speed) + cp.multiply(omin, pf) - omin * fmax + Mbig * off,
     ]
 
 
@@ -199,6 +248,7 @@ def build_constraints(model, wdn, include_mass_balance: bool = True, soft: bool 
     cons += pump_negative_headloss(model, wdn)
     cons += pump_power(model, wdn)
     cons += pump_bigm(model, wdn)
+    cons += vsp_speed_mccormick(model, wdn)
     if soft:
         cons += tank_head_bounds_soft(model, wdn)
         cons += junction_head_bounds_soft(model, wdn)
