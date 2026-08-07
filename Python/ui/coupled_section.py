@@ -74,6 +74,18 @@ def render_coupled(st) -> None:
     tmp = PDN.build(feeder)
     vnom = tmp.model.voltage(tmp.model.p_load, tmp.model.q_load)
     weakest = int(np.argmin(vnom))
+    # Feeder headroom check: if the feeder's own base load already sits below Vmin,
+    # no pump schedule or PV reactive dispatch can hold Vmin -- the coupled solve will
+    # (honestly) report a voltage violation. Surface this before the user runs it.
+    base_vmin = float(vnom.min())
+    if base_vmin < vmin:
+        st.warning(
+            f"⚠️ **Feeder voltage headroom.** {fmeta['label']}'s minimum bus voltage at "
+            f"*base load alone* is {base_vmin:.3f} pu — already below Vmin = {vmin:.2f} pu, "
+            f"before any pump load is added. This case will report a voltage violation "
+            f"regardless of the schedule. To get a feasible coupled case, lower **Vmin** "
+            f"(e.g. 0.90), connect the pumps to stronger buses (nearer the substation), "
+            f"or add PV (raise Spv / active PV sites).")
     pump_ids = _probe_pump_ids(net)
     with r2[2]:
         st.caption("Pump → feeder bus (Xi coupling):")
