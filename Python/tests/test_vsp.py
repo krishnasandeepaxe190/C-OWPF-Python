@@ -81,3 +81,25 @@ def test_vsp_run_case_reports_savings():
     assert case.savings_pct > 5.0
     assert case.min_pressure > 0
     assert np.isfinite(case.max_dhead) and case.max_dhead < 10.0
+
+
+def test_vsp_coupled_cuts_cost_and_holds_voltage():
+    """In the coupled C-OWPF, variable speed cuts total cost and does not hurt
+    (usually helps) the feeder voltage; the solution validates against Z-bus."""
+    from coupled import (setup as csetup, CoupledConfig, solve_coupled_schedule,
+                         validate_coupled)
+    from coupled.config import LOAD_PROFILE_24
+    from owf.warmstart import epanet_default_onoff
+    ccF = CoupledConfig(feeder="ieee13", load_profile=LOAD_PROFILE_24)
+    wF, pF = csetup(8, ccF, time=12)
+    sched = epanet_default_onoff(wF)
+    rF = solve_coupled_schedule(wF, pF, ccF, sched)
+    ccV = CoupledConfig(feeder="ieee13", vsp_pumps={"9": (0.8, 1.0)},
+                        load_profile=LOAD_PROFILE_24)
+    wV, pV = csetup(8, ccV, time=12)
+    rV = solve_coupled_schedule(wV, pV, ccV, sched, max_iter=80)
+    assert rV.speed is not None
+    assert rV.total_cost < rF.total_cost                       # VSP cuts coupled cost
+    assert rV.voltage.min() >= rF.voltage.min() - 1e-6         # voltage not hurt
+    val = validate_coupled(wV, pV, rV)
+    assert val.v_err_max < 0.02                                # Z-bus voltage matches

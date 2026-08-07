@@ -43,7 +43,7 @@ def _score(wdn, res: CoupledResult, feas_tol: float, v_tol: float):
     infeas = (wsl > feas_tol) or (vviol > v_tol)
     viol = max(0.0, wsl - feas_tol) + max(0.0, vviol - v_tol)
     # true pump cost (honest, nonlinear) + priced network loss from the coupled solve
-    pump_cost = true_energy_cost(wdn, res.flows)
+    pump_cost = true_energy_cost(wdn, res.flows, getattr(res, "speed", None))
     loss_cost = res.loss_cost if np.isfinite(res.loss_cost) else 0.0
     cost = pump_cost + loss_cost
     return (1 if infeas else 0, round(viol, 4), cost), cost, vviol

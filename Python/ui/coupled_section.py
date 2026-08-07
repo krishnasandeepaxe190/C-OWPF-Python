@@ -95,6 +95,19 @@ def render_coupled(st) -> None:
             format_func=lambda b: f"bus {fmeta['orig_id'][b]}", key=f"cpl_pb_{i}"))
             for i, pid in enumerate(pump_ids)]
 
+    vsp = None
+    with st.expander("⚙️ Variable-speed pumps (VSP)"):
+        st.caption("Run selected pumps at variable speed ω ∈ [ω_min, 1]. Reduced speed "
+                   "cuts pump energy (∝ ω³) **and** the load the pump imposes on the "
+                   "feeder, so it usually lifts voltages too.")
+        vsp_sel = st.multiselect("Variable-speed pumps", pump_ids, key="cpl_vsp_sel")
+        omin = st.slider("Minimum relative speed ω_min", 0.50, 1.0, 0.80, 0.05,
+                         key="cpl_vsp_omin")
+        if vsp_sel:
+            vsp = {p: (float(omin), 1.0) for p in vsp_sel}
+            st.info(f"VSP active on {len(vsp)} pump(s); both the decoupled and coupled "
+                    f"solves co-optimize pump speed.")
+
     run = st.button("🔗  Run coupled vs decoupled", type="primary", key="cpl_run")
     if not run:
         st.info("Set the water net, feeder and DER, then **Run coupled vs decoupled**.")
@@ -104,7 +117,7 @@ def render_coupled(st) -> None:
 
     fast = (effort == "Fast")
     cc = CoupledConfig(feeder=feeder, pump_bus=pump_bus, pv_sizing=pv_sizing,
-                       vmin=vmin, vmax=vmax, load_profile=LOAD_PROFILE_24)
+                       vmin=vmin, vmax=vmax, load_profile=LOAD_PROFILE_24, vsp_pumps=vsp)
     eta = ("~1 min" if (net == 97 and feeder in ("sb128", "sce56")) else
            "up to a minute" if heavy else "a few seconds")
     with st.spinner(f"Solving decoupled and coupled ({effort} search, {eta})..."):

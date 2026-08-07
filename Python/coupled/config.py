@@ -33,6 +33,10 @@ class CoupledConfig:
     # (the paper's Xi coupling matrix; pumps attach to load buses). None -> auto-
     # place pumps at the electrically weakest buses, where coupling is most visible.
     pump_bus: Optional[Sequence[int]] = None
+    # Variable-speed pumps: {pump_id: (omega_min, omega_max)}. Listed pumps run at
+    # variable speed; the reduced-speed power (~omega^3) lowers the feeder load. None
+    # -> all fixed-speed. Passed straight to the water SolverConfig.
+    vsp_pumps: Optional[dict] = None
     pump_load_scale: float = 1.0           # amplify pump electrical load (demo aid)
     load_scale: float = 1.0                # scale the feeder base load (Psi p)
     # Base feeder load over the day. None -> STATIC nominal load every hour (as in

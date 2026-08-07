@@ -25,7 +25,7 @@ def setup(net_num: int, cc: CoupledConfig, time: Optional[int] = None,
           price_choice: int = 1, solver: str = "HIGHS") -> tuple[WDN, PDN]:
     """Build the water network and the distribution feeder for a coupled run."""
     wcfg = SolverConfig(net_num=net_num, time=time, price_choice=price_choice,
-                        solver=solver)
+                        solver=solver, vsp_pumps=cc.vsp_pumps)
     wdn = setup_wdn(wcfg)
     pdn = PDN.build(cc.feeder, pv_sizing=cc.pv_sizing, vmin=cc.vmin, vmax=cc.vmax)
     return wdn, pdn
@@ -36,9 +36,13 @@ def solve_coupled_schedule(wdn: WDN, pdn: PDN, cc: CoupledConfig,
                            max_iter: int = 20) -> CoupledResult:
     """Fix ``onoff``, warm-start from EPANET, and converge the coupled problem."""
     onoff = np.round(np.asarray(onoff)).astype(float)
+    # VSP needs the damped homotopy (the McCormick relaxation) and a few more
+    # iterations to settle; FSP keeps the single-shot warm-started convergence.
+    vsp = wdn.pump.any_vsp
     cfg = replace(wdn.config, fixed_schedule=onoff, soft_bounds=soft_bounds,
-                  damping=1.0, penalty_weight=1.0e3, penalty_growth=1.2,
-                  penalty_max=1.0e5, max_iter=max_iter, feas_tol=2.0)
+                  damping=0.5 if vsp else 1.0, penalty_weight=1.0e3,
+                  penalty_growth=1.2, penalty_max=1.0e5,
+                  max_iter=max(max_iter, 80) if vsp else max_iter, feas_tol=2.0)
     wdn_fixed = replace(wdn, config=cfg)
     lin, eps = warmstart_point(wdn_fixed, onoff)
     return solve_coupled(wdn_fixed, pdn, cc, lin_override=lin, eps_override=eps)

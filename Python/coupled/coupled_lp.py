@@ -51,7 +51,7 @@ class CoupledResult:
     heads: np.ndarray                # (N_w x T)
     flows: np.ndarray                # (L x T)
     onoff: np.ndarray                # (Pu x T)
-    ppump_true: np.ndarray           # (Pu x T) true nonlinear FSP power (kW)
+    ppump_true: np.ndarray           # (Pu x T) true nonlinear pump power (kW)
     water_max_slack: float
     # power
     voltage: np.ndarray              # (N_p x T) linear |V| (pu)
@@ -68,6 +68,7 @@ class CoupledResult:
     loss_kw: np.ndarray = None       # (T,) LinDistFlow network loss (kW)
     loss_cost: float = float("nan")  # priced loss cost ($, at the WDN price)
     total_cost: float = float("nan") # energy_cost + loss_cost ($)
+    speed: np.ndarray = None         # (Pu x T) VSP relative speed (None if all FSP)
     errors: list = field(default_factory=list)
     objectives: list = field(default_factory=list)
 
@@ -296,12 +297,23 @@ def solve_coupled(wdn: WDN, pdn: PDN, cc: CoupledConfig,
         else:
             f_lin = cfg.damping * flows + (1.0 - cfg.damping) * f_lin_prev
         f_lin_prev = f_lin
-        _set_params(wmodel, linearize(f_lin, wdn.M, wdn.pump))
+        speed = (np.asarray(wmodel.Speed.value) if wmodel.Speed is not None
+                 and wmodel.Speed.value is not None else None)
+        _set_params(wmodel, linearize(f_lin, wdn.M, wdn.pump, speed=speed))
         # relinearize the (convex) loss around the new branch flows
         ctx["Pbk"].value = np.asarray(ctx["P_branch"].value)
         ctx["Qbk"].value = np.asarray(ctx["Q_branch"].value)
 
-        if err < cfg.tol:
+        # VSP: the McCormick relaxation contracts the flow iterate slowly, so also
+        # accept a stable objective over the last 3 iterates (bound-feasible). FSP
+        # converges on the iterate norm first, so it is unaffected.
+        obj_stable = (
+            wdn.pump.any_vsp and len(objectives) >= 3
+            and (max(objectives[-3:]) - min(objectives[-3:]))
+            <= cfg.obj_rtol * max(1e-9, abs(objectives[-1]))
+            and (not soft or cur_slack <= cfg.feas_tol)
+        )
+        if err < cfg.tol or obj_stable:
             converged = True
             break
 
@@ -324,7 +336,7 @@ def solve_coupled(wdn: WDN, pdn: PDN, cc: CoupledConfig,
         grid_kw=snap["grid_kw"], pump_bus=np.asarray(ctx["pump_bus"]),
         v_min=float(v.min()), v_violation=v_violation,
         loss_kw=snap["loss_kw"], loss_cost=snap["loss_cost"],
-        total_cost=snap["total_cost"],
+        total_cost=snap["total_cost"], speed=snap.get("speed"),
         errors=errors, objectives=objectives,
     )
 
@@ -350,6 +362,8 @@ def _snapshot(wmodel, wdn, pdn, cc, ctx) -> dict:
     heads = np.asarray(wmodel.Heads.value)
     onoff = np.asarray(wmodel.OnOff.value if hasattr(wmodel.OnOff, "value")
                        else wmodel.OnOff)
+    speed = (np.asarray(wmodel.Speed.value) if wmodel.Speed is not None
+             and wmodel.Speed.value is not None else None)
     _val = lambda e: np.asarray(e.value if hasattr(e, "value") else e)
     p_net = _val(ctx["p_net"])
     q_net = _val(ctx["q_net"])
@@ -370,8 +384,8 @@ def _snapshot(wmodel, wdn, pdn, cc, ctx) -> dict:
     loss_kw = loss_pu * (SBase / 1000.0)
     loss_cost = float(ctx["price"] @ (loss_kw / 1000.0))
     return dict(
-        flows=flows, heads=heads, onoff=onoff,
-        ppump_true=_true_pump_power(wdn, flows),
+        flows=flows, heads=heads, onoff=onoff, speed=speed,
+        ppump_true=_true_pump_power(wdn, flows, speed),
         water_max_slack=_max_slack(wmodel) if wdn.config.soft_bounds else 0.0,
         voltage=voltage, v2=v2, pv_p=pv_p, pv_q=pv_q, pv_buses=np.asarray(ctx["pv"]),
         p_net=p_net, q_net=q_net, grid_kw=grid_kw, energy_cost=energy_cost,
