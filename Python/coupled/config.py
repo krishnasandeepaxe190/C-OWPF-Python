@@ -37,6 +37,10 @@ class CoupledConfig:
     # variable speed; the reduced-speed power (~omega^3) lowers the feeder load. None
     # -> all fixed-speed. Passed straight to the water SolverConfig.
     vsp_pumps: Optional[dict] = None
+    # PRV pressure-setting overrides {valve_id: P_set_psi}; None -> .inp settings.
+    # PRVs draw no electrical power; their effect on the feeder is indirect (less
+    # wasted head -> different pump operation -> different bus load).
+    prv_settings: Optional[dict] = None
     pump_load_scale: float = 1.0           # amplify pump electrical load (demo aid)
     load_scale: float = 1.0                # scale the feeder base load (Psi p)
     # Base feeder load over the day. None -> STATIC nominal load every hour (as in

@@ -13,7 +13,25 @@ MATLAB C-OWPF code (IEEE Access-2024-18604), covering three problems:
 Each iteration of a **successive linear-approximation** loop is a **MILP** (an LP
 once the pump schedule is fixed) — solved with **HiGHS** through **CVXPY**. The
 water physics is validated against **EPANET** (via **epyt**) and the power physics
-against a nonlinear **Z-bus** solve. VSP and PRV models are upcoming phases.
+against a nonlinear **Z-bus** solve.
+
+**Variable-speed pumps (VSP)** and **pressure-reducing valves (PRV)** are modeled:
+
+- **VSP** — the relative speed ω ∈ [ω_min, ω_max] is a decision variable (gated by
+  on/off). Head gain `h0·ω² − σ·f^ν` is linearized in (ω, f); the bilinear ω·f in
+  the power is handled by a McCormick auxiliary `WW = ω·f`. Power ∝ ω³, so reduced
+  speed cuts energy — on the 8-node, VSP saves ~49% vs fixed speed (EPANET-validated),
+  and in the coupled problem it also lightens the feeder load (better voltages).
+  Select VSP pumps and ω_min in the Water/Coupled tabs (`SolverConfig.vsp_pumps`).
+  The EPANET baseline honestly uses the speeds the network's own `SETTING`
+  controls apply (read back from EPANET's applied settings).
+- **PRV** — a three-state valve (closed / open / active) via two binaries with
+  `x_act + x_open ≤ 1`, exact in the binaries (no relinearization). When *active*
+  it pins its downstream junction to `h_set = E_down + P_set·2.3072` by absorbing
+  `R_PRV` of head. The **8-node + PRV** network (net 108) reproduces EPANET's PRV
+  logic to ~0.15 ft; `h_set` is user-tunable (`SolverConfig.prv_settings`), and the
+  app plots the paper-style PRV panel (state timeline, downstream head vs h_set,
+  R_PRV, valve flow — model vs EPANET).
 
 ## Install & run
 
@@ -338,5 +356,9 @@ Two levels, both in `validation.py`:
   the linear model is checked against. PV active is fixed at available solar; PV
   **reactive** is the control. Voltage limits are hard, with an optional soft-slack
   feasibility device (the same one used for water head bounds — not an economic term).
-- **Upcoming phases**: VSPs and PRVs (labeled "coming next" in the app).
+- **VSP / PRV**: implemented (see the feature summary at the top). The MATLAB
+  reference toggles FSP-vs-VSP per script; the Python port has a genuine per-pump
+  partition (`PumpParams.is_vsp`), and the PRV uses the two-binary three-state
+  model (the MATLAB's third binary `ValveStatusOnOff` is redundant: it equals
+  `x_act + x_open`).
 ```

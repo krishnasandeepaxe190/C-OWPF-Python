@@ -62,6 +62,34 @@ def render_guide(st) -> None:
                     "curve** — single design point → exact quadratic ($\\nu=2$); "
                     "multi-point → fitted $\\nu$ (Net3: 1.77 & 1.09).")
 
+    # ---- VSP & PRV ----
+    with st.expander("3b · Variable-speed pumps (VSP) & pressure-reducing valves (PRV)"):
+        st.markdown("**VSP** — the relative speed $\\omega \\in [\\omega_{\\min},"
+                    "\\omega_{\\max}]$ becomes a decision variable (gated by on/off). "
+                    "Head gain and power become speed-dependent:")
+        st.latex(r"\Delta h = h_0\,\omega^2 - \sigma f^{\nu}"
+                 r"\;\approx\; -(C1M\,\omega + C2M\,f),\qquad C1M=-h_0\langle\omega\rangle")
+        st.markdown("The bilinear $\\omega f$ in the power is handled by a McCormick "
+                    "auxiliary $WW=\\omega f$ (4 linear envelope rows) — power "
+                    "$\\propto \\omega^3$, so running slower saves energy:")
+        st.latex(r"P = c_m\big(A'f + B'z + h_0\langle\omega\rangle\,WW\big),\qquad "
+                 r"\omega_{\min} z \le \omega \le \omega_{\max} z")
+        st.markdown("**PRV** — a three-state valve (closed / open / active) via two "
+                    "binaries $x^{act}, x^{open}$ with $x^{act}+x^{open}\\le 1$. "
+                    "When *active* it pins its downstream junction to the setpoint "
+                    "$h^{set} = E_{down} + P^{set}\\!\\cdot\\!2.307$ by absorbing "
+                    "$R^{PRV}$ of head; when *open* it passes flow losslessly; when "
+                    "*closed* it blocks reverse flow:")
+        st.latex(r"-M(1-x^{act}-x^{open})\le h_i-h_j-R^{PRV}\le M(1-x^{act}-x^{open})")
+        st.latex(r"h_j \text{ pinned to } h^{set} \text{ when } x^{act}=1,\qquad "
+                 r"10^{-6}x^{act}\le R^{PRV}\le M x^{act}")
+        st.markdown("The PRV is **exact in the binaries** (no relinearisation needed) "
+                    "and matches EPANET's own three-state PRV logic — the 8-node+PRV "
+                    "network reproduces EPANET to ~0.15 ft. In the coupled problem, "
+                    "optimal PRV scheduling avoids wasting pumped head across the "
+                    "valve, so the pump draws less power → lighter feeder load → "
+                    "lower loss and better voltages.")
+
     # ---- successive linearization ----
     with st.expander("4 · Successive linearisation"):
         st.markdown(

@@ -25,7 +25,8 @@ def setup(net_num: int, cc: CoupledConfig, time: Optional[int] = None,
           price_choice: int = 1, solver: str = "HIGHS") -> tuple[WDN, PDN]:
     """Build the water network and the distribution feeder for a coupled run."""
     wcfg = SolverConfig(net_num=net_num, time=time, price_choice=price_choice,
-                        solver=solver, vsp_pumps=cc.vsp_pumps)
+                        solver=solver, vsp_pumps=cc.vsp_pumps,
+                        prv_settings=cc.prv_settings)
     wdn = setup_wdn(wcfg)
     pdn = PDN.build(cc.feeder, pv_sizing=cc.pv_sizing, vmin=cc.vmin, vmax=cc.vmax)
     return wdn, pdn

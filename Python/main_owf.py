@@ -123,12 +123,15 @@ class CaseResult:
 def run_case(net: int, mode: str, price: int, horizon, plot: bool,
              outdir: str, verbose: bool,
              solver: str = "HIGHS",
-             vsp: dict = None) -> tuple[Optional[CaseResult], object, object]:
+             vsp: dict = None,
+             prv: dict = None) -> tuple[Optional[CaseResult], object, object]:
     """Construct and solve one case; returns (CaseResult, wdn, result).
 
     ``vsp`` maps a pump id to its (omega_min, omega_max) speed bounds; listed
     pumps run at variable speed. When any VSP is present the case uses a
     soft-bound, damped direct solve (the McCormick relaxation needs it).
+    ``prv`` maps a valve id to its pressure setting P_set (psi), overriding the
+    .inp value (h_set = downstream elevation + P_set * 2.3072).
     """
     label = f"{NETWORKS[net].name}/{mode}/{'TOU' if price == 1 else 'flat'}"
     if vsp:
@@ -141,15 +144,25 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
         # bound / damped homotopy to converge; run a single direct solve.
         wdn = setup(SolverConfig(
             net_num=net, price_choice=price, time=horizon, vsp_pumps=vsp,
+            prv_settings=prv,
             soft_bounds=True, damping=0.5, penalty_weight=1e3, penalty_growth=1.5,
             max_iter=80, feas_tol=0.5, verbose=verbose, solver=solver,
             fallback_solvers=_fallbacks(solver)))
     elif mode in ("warmstart",):
-        wdn = setup(_warmstart_config(net, price, horizon, solver))
+        cfgw = _warmstart_config(net, price, horizon, solver)
+        cfgw.prv_settings = prv
+        wdn = setup(cfgw)
     else:
         wdn = setup(SolverConfig(net_num=net, price_choice=price, time=horizon,
+                                 prv_settings=prv,
                                  verbose=verbose, solver=solver,
                                  fallback_solvers=_fallbacks(solver)))
+        # PRV networks need the soft-bound homotopy: a hard-bounded direct solve is
+        # infeasible whenever the setpoint pins a head outside the reachable range.
+        if wdn.n_valves and not wdn.config.soft_bounds:
+            cfgv = _warmstart_config(net, price, horizon, solver)
+            cfgv.prv_settings = prv
+            wdn = setup(cfgv)
     print(f"  network: nodes={wdn.n_nodes} links={wdn.n_links} pumps={wdn.n_pumps} "
           f"tanks={wdn.n_tanks} horizon={wdn.time}h")
 

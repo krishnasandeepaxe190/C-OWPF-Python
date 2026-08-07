@@ -23,8 +23,8 @@ from owf.warmstart import optimize_schedule as water_optimize, epanet_default_on
 from .theme import COUPLED, section_header
 from . import pdn_plots as P
 
-NET_LABELS = {8: "8-node", 3: "3-node", 11: "Net1", 36: "Net2", 97: "Net3",
-              126: "BWSN (large)"}
+NET_LABELS = {8: "8-node", 108: "8-node + PRV", 3: "3-node", 11: "Net1",
+              36: "Net2", 97: "Net3", 126: "BWSN (large)"}
 
 
 @_st.cache_data(show_spinner=False)
@@ -42,7 +42,7 @@ def render_coupled(st) -> None:
                    "paper's pump-energy cost; PV reactive holds voltages.")
 
     r1 = st.columns([1, 1, 1, 1])
-    net = r1[0].selectbox("Water network", [8, 3, 11, 36, 97, 126], format_func=NET_LABELS.get,
+    net = r1[0].selectbox("Water network", [8, 108, 3, 11, 36, 97, 126], format_func=NET_LABELS.get,
                           key="cpl_net",
                           help="8-node / 3-node solve in seconds; Net1/Net2 take longer; "
                                "Net3 is heavy (large network + many schedule evaluations).")
@@ -95,6 +95,17 @@ def render_coupled(st) -> None:
             format_func=lambda b: f"bus {fmeta['orig_id'][b]}", key=f"cpl_pb_{i}"))
             for i, pid in enumerate(pump_ids)]
 
+    prv = None
+    if net == 108:
+        with st.expander("🔻 Pressure-reducing valve (PRV)", expanded=True):
+            st.caption("The 8-node+PRV net has one PRV (junction 6 → 9, fixed location). "
+                       "Optimal PRV scheduling stops head being wasted across the valve, "
+                       "so the pump works less — a lighter feeder load and better "
+                       "voltages. Tune the pressure setting h_set:")
+            pset = st.slider("PRV pressure setting P_set (psi)", 5.0, 60.0, 20.0, 1.0,
+                             key="cpl_prv_pset")
+            prv = {"10": float(pset)}
+
     vsp = None
     with st.expander("⚙️ Variable-speed pumps (VSP)"):
         st.caption("Run selected pumps at variable speed ω ∈ [ω_min, 1]. Reduced speed "
@@ -117,7 +128,8 @@ def render_coupled(st) -> None:
 
     fast = (effort == "Fast")
     cc = CoupledConfig(feeder=feeder, pump_bus=pump_bus, pv_sizing=pv_sizing,
-                       vmin=vmin, vmax=vmax, load_profile=LOAD_PROFILE_24, vsp_pumps=vsp)
+                       vmin=vmin, vmax=vmax, load_profile=LOAD_PROFILE_24,
+                       vsp_pumps=vsp, prv_settings=prv)
     eta = ("~1 min" if (net == 97 and feeder in ("sb128", "sce56")) else
            "up to a minute" if heavy else "a few seconds")
     with st.spinner(f"Solving decoupled and coupled ({effort} search, {eta})..."):
@@ -154,11 +166,21 @@ def render_coupled(st) -> None:
         val = validate_coupled(wdn, pdn, cpl, vmin=vmin, vmax=vmax)
         dec_loss = coupled_loss_kwh(pdn, dec)      # true Z-bus loss (kW·h)
         cpl_loss = coupled_loss_kwh(pdn, cpl)
+        prv_fig = None
+        if getattr(cpl, "prv", None) and wdn.n_valves:
+            try:
+                from .prv_plots import prv_panel
+                prv_fig = prv_panel(wdn, cpl.heads, cpl.flows, cpl.prv,
+                                    heads_ep=val.water.heads_epanet,
+                                    flows_ep=val.water.flows_epanet)
+            except Exception:
+                prv_fig = None
 
     st.session_state["cpl_result"] = dict(
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
-        pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss)
+        pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss,
+        prv_fig=prv_fig)
     _render_coupled_result(st)
 
 
@@ -209,8 +231,19 @@ def _render_coupled_result(st) -> None:
 
     T = cpl.voltage.shape[1]
     h0 = min(12, T - 1)
-    tabs = st.tabs(["Feeder map", "Voltage profile", "Pump schedule",
-                    "PV reactive", "Search trace"])
+    tab_names = ["Feeder map", "Voltage profile", "Pump schedule",
+                 "PV reactive", "Search trace"]
+    if R.get("prv_fig") is not None:
+        tab_names.append("PRV")
+    tabs = st.tabs(tab_names)
+    if R.get("prv_fig") is not None:
+        with tabs[-1]:
+            st.plotly_chart(R["prv_fig"], use_container_width=True, key="cpl_prv_fig")
+            st.caption("Optimal PRV scheduling in the coupled problem: when the valve "
+                       "is **active** it holds the downstream zone exactly at h_set "
+                       "instead of over-pressurizing it, so less pump head (and less "
+                       "electrical power) is needed — a lighter feeder load, which "
+                       "shows up as lower loss and better voltages in the table above.")
     with tabs[0]:
         hr = st.slider("Hour", 0, T - 1, h0, key="cpl_map_hr")
         st.plotly_chart(P.feeder_map(fmeta, val.v_nl, hr, R["pv_buses"], R["pump_bus"],

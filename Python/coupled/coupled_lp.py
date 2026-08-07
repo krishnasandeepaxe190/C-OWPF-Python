@@ -34,7 +34,8 @@ import numpy as np
 from owf import constraints as C
 from owf.linearization import LinPoint, error_norm, linearize, stack_eps
 from owf.network import WDN
-from owf.solver import _build_model, _set_params, _max_slack, _true_pump_power
+from owf.solver import (_build_model, _set_params, _max_slack, _true_pump_power,
+                        _prv_snapshot)
 
 from pdn.network import PDN
 from .config import CoupledConfig
@@ -69,6 +70,7 @@ class CoupledResult:
     loss_cost: float = float("nan")  # priced loss cost ($, at the WDN price)
     total_cost: float = float("nan") # energy_cost + loss_cost ($)
     speed: np.ndarray = None         # (Pu x T) VSP relative speed (None if all FSP)
+    prv: dict = None                 # PRV decisions x_act/x_open/R_prv (if any)
     errors: list = field(default_factory=list)
     objectives: list = field(default_factory=list)
 
@@ -304,11 +306,12 @@ def solve_coupled(wdn: WDN, pdn: PDN, cc: CoupledConfig,
         ctx["Pbk"].value = np.asarray(ctx["P_branch"].value)
         ctx["Qbk"].value = np.asarray(ctx["Q_branch"].value)
 
-        # VSP: the McCormick relaxation contracts the flow iterate slowly, so also
-        # accept a stable objective over the last 3 iterates (bound-feasible). FSP
-        # converges on the iterate norm first, so it is unaffected.
+        # VSP/PRV: the McCormick relaxation (VSP) contracts the iterate slowly and
+        # PRV binaries can flip between symmetric optima -- so also accept a stable
+        # objective over the last 3 iterates (bound-feasible). FSP converges on the
+        # iterate norm first, so it is unaffected.
         obj_stable = (
-            wdn.pump.any_vsp and len(objectives) >= 3
+            (wdn.pump.any_vsp or wdn.n_valves > 0) and len(objectives) >= 3
             and (max(objectives[-3:]) - min(objectives[-3:]))
             <= cfg.obj_rtol * max(1e-9, abs(objectives[-1]))
             and (not soft or cur_slack <= cfg.feas_tol)
@@ -337,6 +340,7 @@ def solve_coupled(wdn: WDN, pdn: PDN, cc: CoupledConfig,
         v_min=float(v.min()), v_violation=v_violation,
         loss_kw=snap["loss_kw"], loss_cost=snap["loss_cost"],
         total_cost=snap["total_cost"], speed=snap.get("speed"),
+        prv=snap.get("prv"),
         errors=errors, objectives=objectives,
     )
 
@@ -385,6 +389,7 @@ def _snapshot(wmodel, wdn, pdn, cc, ctx) -> dict:
     loss_cost = float(ctx["price"] @ (loss_kw / 1000.0))
     return dict(
         flows=flows, heads=heads, onoff=onoff, speed=speed,
+        prv=_prv_snapshot(wmodel),
         ppump_true=_true_pump_power(wdn, flows, speed),
         water_max_slack=_max_slack(wmodel) if wdn.config.soft_bounds else 0.0,
         voltage=voltage, v2=v2, pv_p=pv_p, pv_q=pv_q, pv_buses=np.asarray(ctx["pv"]),

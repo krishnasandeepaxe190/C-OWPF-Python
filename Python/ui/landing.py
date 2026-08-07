@@ -231,6 +231,9 @@ def render_landing(st) -> None:
         st.markdown("**FSP head gain & power** (general exponent ν)")
         st.latex(r"P^{\text{pump}}_p = c_m\,(h_{0,p}-\sigma_p f_p^{\nu})\,f_p,\qquad "
                  r"\tilde{\Pi}\,H = C_p + \Pi'\,Q")
+        st.markdown("**VSP** — speed ω is a decision (power ∝ ω³); bilinear ωf via McCormick")
+        st.latex(r"\Delta h = h_0\omega^2-\sigma f^{\nu},\quad "
+                 r"P = c_m(A'f + B'z + h_0\langle\omega\rangle WW),\quad WW \approx \omega f")
     with f2:
         st.markdown("**LinDistFlow / Kekatos voltage** (squared magnitudes)")
         st.latex(r"v^2 = R\,(-p_{\text{net}}) + X\,(-q_{\text{net}}) + V_k,\qquad F=-A^{-1}")
@@ -240,8 +243,12 @@ def render_landing(st) -> None:
         st.markdown("**Pump reactive coupling & PV capability**")
         st.latex(r"q^{\text{pump}} = P^{\text{pump}}_{\text{pu}}\sqrt{\tfrac{1}{PF^2}-1},"
                  r"\qquad |q^{pv}| \le \sqrt{S^2 - (p^{pv})^2}")
-        st.latex(r"p_{\text{net}} = \Psi p + \Xi P^{\text{pump}}_{\text{pu}} - \Gamma p^{pv},"
-                 r"\quad V_{\min}^2 \le v^2 \le V_{\max}^2")
+        st.markdown("**PRV — three-state valve** (2 binaries; pins downstream head to h_set)")
+        st.latex(r"x^{act}+x^{open}\le 1,\quad "
+                 r"h_j = h^{set}\text{ if }x^{act}\!=\!1,\quad "
+                 r"10^{-6}x^{act}\le R^{PRV}\le M x^{act}")
 
     st.info("Open **💧 Water**, **⚡ Power**, or **🔗 Coupled** above to run a case. "
-            "See **📖 Guide** for the full methodology. VSP & PRV modeling are upcoming phases.")
+            "See **📖 Guide** for the full methodology. Variable-speed pumps (VSP) and "
+            "pressure-reducing valves (PRV) are modeled — pick VSP pumps in any water "
+            "net, and try the **8-node + PRV** network with your own h_set.")

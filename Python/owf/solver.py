@@ -70,6 +70,7 @@ class OWFResult:
     ppump_linear: np.ndarray   # (Pu x T)  model (linearized) pump power
     ppump_true: np.ndarray     # (Pu x T)  true nonlinear pump power at solution
     speed: np.ndarray = None   # (Pu x T)  VSP relative speed (None if all FSP)
+    prv: dict = None           # PRV decisions: x_act, x_open, R_prv (Nv x T) if any
     errors: list = field(default_factory=list)
     objectives: list = field(default_factory=list)
     max_slack: float = float("nan")   # max head-bound violation (soft_bounds only)
@@ -140,6 +141,15 @@ def _max_slack(model: Model) -> float:
     return float(max(vals)) if vals else 0.0
 
 
+def _prv_snapshot(model: Model) -> Optional[dict]:
+    """Current PRV decisions (x_act / x_open / R_prv) as plain arrays, or None."""
+    if model.x_act is None or model.x_act.value is None:
+        return None
+    return dict(x_act=np.round(np.asarray(model.x_act.value)),
+                x_open=np.round(np.asarray(model.x_open.value)),
+                R_prv=np.asarray(model.R_prv.value))
+
+
 def _true_pump_power(wdn: WDN, flows: np.ndarray, speed: np.ndarray = None) -> np.ndarray:
     """Nonlinear pump power at a flow solution.
 
@@ -184,7 +194,7 @@ def solve_owf(
     f_lin_prev = None
     errors, objectives = [], []
     status = "not_solved"
-    heads = flows = onoff = ppump = speed = None
+    heads = flows = onoff = ppump = speed = prv = None
     converged = False
     n_iter = 0
     max_slack = float("nan")
@@ -232,6 +242,7 @@ def solve_owf(
         ppump = np.asarray(model.Ppump.value)
         speed = (np.asarray(model.Speed.value) if model.Speed is not None
                  and model.Speed.value is not None else None)
+        prv = _prv_snapshot(model)
         cur_slack = _max_slack(model) if soft else 0.0
         max_slack = cur_slack if soft else float("nan")
 
@@ -245,7 +256,7 @@ def solve_owf(
         key = (round(cur_slack, 6), err)
         if key < best_key:
             best_key = key
-            best = (heads, flows, onoff, ppump, speed, objectives[-1], max_slack)
+            best = (heads, flows, onoff, ppump, speed, prv, objectives[-1], max_slack)
 
         if cfg.verbose:
             extra = f"  max_slack={cur_slack:.4g}" if soft else ""
@@ -260,11 +271,12 @@ def solve_owf(
         f_lin_prev = f_lin
         _set_params(model, linearize(f_lin, wdn.M, wdn.pump, speed=speed))
 
-        # VSP: the McCormick relaxation contracts the flow iterate only slowly, so
-        # also accept a stable objective (over the last 3 iterates) as converged,
+        # VSP/PRV: the McCormick relaxation (VSP) contracts the flow iterate only
+        # slowly, and PRV binaries can flip between symmetric optima -- so also
+        # accept a stable objective (over the last 3 iterates) as converged,
         # provided the bounds are satisfied. FSP still converges on the norm first.
         obj_stable = (
-            wdn.pump.any_vsp and len(objectives) >= 3
+            (wdn.pump.any_vsp or wdn.n_valves > 0) and len(objectives) >= 3
             and (max(objectives[-3:]) - min(objectives[-3:]))
             <= cfg.obj_rtol * max(1e-9, abs(objectives[-1]))
             and (not soft or cur_slack <= cfg.feas_tol)
@@ -276,7 +288,7 @@ def solve_owf(
     # Fall back to the best iterate if the loop stopped without converging.
     obj_final = objectives[-1] if objectives else float("nan")
     if not converged and best is not None:
-        heads, flows, onoff, ppump, speed, obj_final, max_slack = best
+        heads, flows, onoff, ppump, speed, prv, obj_final, max_slack = best
 
     # With soft bounds, "converged" also requires the slacks to be ~0.
     if soft and converged and max_slack > cfg.feas_tol:
@@ -293,6 +305,7 @@ def solve_owf(
         ppump_linear=ppump,
         ppump_true=_true_pump_power(wdn, flows, speed) if flows is not None else None,
         speed=speed,
+        prv=prv,
         errors=errors,
         objectives=objectives,
         max_slack=max_slack,

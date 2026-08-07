@@ -36,6 +36,15 @@ def _pump_ids(net: int) -> list:
     return [str(w.raw.link_name_id[i]) for i in w.raw.link_pump_index]
 
 
+@_st.cache_data(show_spinner=False)
+def _prv_ids(net: int) -> list:
+    """PRV link ids for a water net (cached)."""
+    from owf.config import SolverConfig
+    from owf.network import setup as _setup
+    w = _setup(SolverConfig(net_num=net, time=24))
+    return [str(w.raw.link_name_id[i]) for i in w.M.valve_index]
+
+
 def _build_exports(case, wdn, result) -> dict:
     T = wdn.time
     hours = [f"h{t}" for t in range(T)]
@@ -87,8 +96,21 @@ def _render_case(st, rec) -> None:
     if case.note:
         st.caption(f"note: {case.note}")
 
-    tabs = st.tabs(["Network map", "Flow animation", "Schedule", "Flows", "Heads",
-                    "Convergence", "Error", "Solver log", "Download"])
+    has_prv = rec.get("prv_fig") is not None
+    tab_names = ["Network map", "Flow animation", "Schedule", "Flows", "Heads",
+                 "Convergence", "Error", "Solver log", "Download"]
+    if has_prv:
+        tab_names.insert(2, "PRV")
+    tabs = st.tabs(tab_names)
+    if has_prv:
+        with tabs[2]:
+            st.plotly_chart(rec["prv_fig"], use_container_width=True,
+                            key=f"prv_{rec['id']}")
+            st.caption("Three-state PRV (closed / open / active): when **active** the "
+                       "valve pins its downstream junction to h_set by absorbing "
+                       "R_PRV of head; ✕ markers are EPANET's replay of the same "
+                       "schedule — the model matches the exact hydraulics.")
+        tabs = [tabs[0], tabs[1]] + tabs[3:]          # renumber for the code below
     with tabs[0]:
         md = rec["map_data"]
         if "flows" in md:
@@ -144,6 +166,30 @@ def _controls(st):
                 "Use **optimize** — its binary fixed-speed pumps must switch OFF when a "
                 "tank is full (EPANET throttles instead), so 'epanet' mode overfills a "
                 "tank. Optimize takes a few minutes.")
+    # --- Pressure-reducing valves (PRV) ----------------------------------------
+    # "Add PRVs" swaps in the PRV variant of the network (default valve locations
+    # are fixed by the variant's .inp); the pressure setting h_set is the user's.
+    prv = None
+    PRV_VARIANT = {8: 108}          # base net -> its PRV variant
+    with st.expander("🔻 Pressure-reducing valves (PRV)"):
+        if net in PRV_VARIANT:
+            n_prv = st.radio("Number of PRVs", [0, 1], horizontal=True, key="w_nprv",
+                             help="PRV locations are fixed (8-node: junction 6 → 9); "
+                                  "choose how many are installed.")
+            if n_prv:
+                net = PRV_VARIANT[net]
+        prv_ids = _prv_ids(net)
+        if prv_ids:
+            st.caption(f"{len(prv_ids)} PRV(s) installed (fixed locations). The PRV "
+                       "regulates its downstream junction to h_set = elevation + P_set. "
+                       "PRV runs use the **warmstart** solve (reliable with valve binaries).")
+            pset = st.slider("PRV pressure setting P_set (psi)", 5.0, 60.0, 20.0, 1.0,
+                             key="w_prv_pset",
+                             help="Downstream pressure setpoint; h_set = E_down + P_set·2.307 ft.")
+            prv = {vid: float(pset) for vid in prv_ids}
+        elif net not in PRV_VARIANT.values():
+            st.caption("This network has no PRV variant yet (PRVs available on the 8-node).")
+
     # --- Variable-speed pumps (VSP) --------------------------------------------
     vsp = None
     with st.expander("⚙️ Variable-speed pumps (VSP)"):
@@ -174,13 +220,17 @@ def _controls(st):
     if b2.button("Clear water history", use_container_width=True, key="w_clear"):
         st.session_state.water_records = []
         st.rerun()
-    return net, mode, price, solver, run, vsp
+    return net, mode, price, solver, run, vsp, prv
 
 
 def render_water(st) -> None:
     if "water_records" not in st.session_state:
         st.session_state.water_records = []
-    net, mode, price, solver, run, vsp = _controls(st)
+    net, mode, price, solver, run, vsp, prv = _controls(st)
+    # PRV networks need the warmstart solve: a free-binary direct solve is
+    # unreliable with valve binaries (the recommended mode for net 108).
+    if prv and mode == "direct":
+        mode = "warmstart"
 
     if run:
         eta = {"direct": "a few seconds", "warmstart": "up to a minute",
@@ -194,7 +244,7 @@ def render_water(st) -> None:
                 with contextlib.redirect_stdout(log_buf):
                     case, wdn, result = run_case(net, mode, price, None, plot=True,
                                                  outdir="outputs", verbose=False,
-                                                 solver=solver, vsp=vsp)
+                                                 solver=solver, vsp=vsp, prv=prv)
             except Exception as exc:
                 st.error(f"Case failed: {exc}")
                 case = None
@@ -207,9 +257,23 @@ def render_water(st) -> None:
                     q = p.with_name(f"run{run_id}_{p.name}")
                     shutil.copyfile(p, q)
                     plots.append(q)
+            # paper-style PRV panel (model vs EPANET) when the net has a valve
+            prv_fig = None
+            if (result is not None and result.flows is not None
+                    and getattr(result, "prv", None) and wdn.n_valves):
+                try:
+                    from owf.validation import validate_schedule
+                    from .prv_plots import prv_panel
+                    rep = validate_schedule(wdn, result)
+                    prv_fig = prv_panel(wdn, result.heads, result.flows, result.prv,
+                                        heads_ep=rep.heads_epanet,
+                                        flows_ep=rep.flows_epanet)
+                except Exception:
+                    prv_fig = None
             st.session_state.water_records.append({
                 "id": run_id, "case": case, "log": log_buf.getvalue(), "plots": plots,
                 "map_data": extract_map_data(wdn, result),
+                "prv_fig": prv_fig,
                 "exports": (_build_exports(case, wdn, result)
                             if result is not None and result.flows is not None else {}),
             })

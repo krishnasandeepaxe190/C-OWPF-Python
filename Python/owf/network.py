@@ -190,21 +190,24 @@ def _resolve_vsp(raw: RawNetwork, pump: PumpParams, config: SolverConfig) -> Non
 PSI_TO_FT = 2.30724939   # 1 psi of water = 2.30724939 ft of head
 
 
-def _resolve_valves(raw: RawNetwork) -> tuple:
+def _resolve_valves(raw: RawNetwork, config: SolverConfig = None) -> tuple:
     """PRV link indices and downstream head setpoints.
 
     A PRV regulates its downstream junction to ``h_set = E_down + P_set``, where
     ``E_down`` is the downstream node elevation and ``P_set`` is the valve setting
     converted from psi to ft (paper: h^set = E_j + P^set).
+    ``config.prv_settings`` ({valve_id: psi}) overrides the .inp settings.
     """
     if not raw.link_valve_index.size:
         return np.array([], dtype=int), np.zeros(0)
+    overrides = dict(getattr(config, "prv_settings", None) or {})
     vidx, hset = [], []
     for lk in raw.link_valve_index:
         if str(raw.link_type[lk]).upper() != "PRV":
             continue                                    # only PRVs are modeled
         down = int(raw.to_node[lk])
-        hset.append(float(raw.node_elevations[down] + raw.link_setting[lk] * PSI_TO_FT))
+        psi = float(overrides.get(str(raw.link_name_id[lk]), raw.link_setting[lk]))
+        hset.append(float(raw.node_elevations[down] + psi * PSI_TO_FT))
         vidx.append(int(lk))
     return np.array(vidx, dtype=int), np.array(hset, dtype=float)
 
@@ -235,7 +238,7 @@ def setup(config: SolverConfig) -> WDN:
 
     # PRVs: resolve, and drop them from the permanently-closed set (a valve's state
     # is governed by its PRV binaries, not the closed-pipe zero-flow pin).
-    valve_index, valve_hset = _resolve_valves(raw)
+    valve_index, valve_hset = _resolve_valves(raw, config)
     if valve_index.size:
         raw.closed_pipe_index = np.setdiff1d(raw.closed_pipe_index, valve_index)
 

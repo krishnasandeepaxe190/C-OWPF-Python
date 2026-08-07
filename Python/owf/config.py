@@ -141,6 +141,10 @@ class SolverConfig:
     # variable speed with the given relative-speed bounds; unlisted pumps are fixed
     # speed. Empty/None -> all fixed-speed (the FSP model, unchanged).
     vsp_pumps: Optional[dict] = None
+    # PRV pressure-setting overrides: {valve_id: P_set_psi}. Overrides the .inp
+    # setting for the listed valves (h_set = downstream elevation + P_set * 2.3072).
+    # None -> use each valve's setting from the .inp file.
+    prv_settings: Optional[dict] = None
     soft_bounds: bool = False
     penalty_weight: float = 1.0e3
     penalty_growth: float = 2.0
