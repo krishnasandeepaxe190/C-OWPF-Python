@@ -169,10 +169,14 @@ def render_coupled(st) -> None:
         prv_fig = None
         if getattr(cpl, "prv", None) and wdn.n_valves:
             try:
+                from owf.epanet_io import run_epanet
                 from .prv_plots import prv_panel
+                fl_r, hd_r, _, _ = run_epanet(wdn.raw)   # EPANET rule-based operation
                 prv_fig = prv_panel(wdn, cpl.heads, cpl.flows, cpl.prv,
                                     heads_ep=val.water.heads_epanet,
-                                    flows_ep=val.water.flows_epanet)
+                                    flows_ep=val.water.flows_epanet,
+                                    heads_rule=hd_r[: wdn.time].T,
+                                    flows_rule=fl_r[: wdn.time].T)
             except Exception:
                 prv_fig = None
 
@@ -243,7 +247,11 @@ def _render_coupled_result(st) -> None:
                        "is **active** it holds the downstream zone exactly at h_set "
                        "instead of over-pressurizing it, so less pump head (and less "
                        "electrical power) is needed — a lighter feeder load, which "
-                       "shows up as lower loss and better voltages in the table above.")
+                       "shows up as lower loss and better voltages in the table above. "
+                       "Dotted line = EPANET's own **rule-based** regulation (at the "
+                       ".inp setting): if your h_set is higher, the extra downstream "
+                       "pressure costs more pump energy than the rules — the cost "
+                       "delta buys the pressure target you chose.")
     with tabs[0]:
         hr = st.slider("Hour", 0, T - 1, h0, key="cpl_map_hr")
         st.plotly_chart(P.feeder_map(fmeta, val.v_nl, hr, R["pv_buses"], R["pump_bus"],
@@ -254,12 +262,22 @@ def _render_coupled_result(st) -> None:
                                           fmeta["orig_id"]),
                         use_container_width=True, key="cpl_prof")
     with tabs[2]:
-        sched = cpl.onoff
+        sched = np.round(cpl.onoff)
         pump_labels = [f"pump {i}" for i in range(sched.shape[0])]
-        df = pd.DataFrame(sched.astype(int), index=pump_labels,
-                          columns=[f"h{t}" for t in range(sched.shape[1])])
-        st.dataframe(df, use_container_width=True)
-        st.caption("Coupled pump on/off schedule (1 = on).")
+        if getattr(cpl, "speed", None) is not None:
+            # VSP: cell value = relative speed omega while running (0 = off)
+            vals = np.round(sched * cpl.speed[:, :sched.shape[1]], 2)
+            df = pd.DataFrame(vals, index=pump_labels,
+                              columns=[f"h{t}" for t in range(sched.shape[1])])
+            st.dataframe(df, use_container_width=True)
+            st.caption("Coupled pump schedule — cell value = **relative speed ω** "
+                       "while the pump runs (1.0 = full speed, 0 = off). "
+                       "Fixed-speed pumps show 1.0 when on.")
+        else:
+            df = pd.DataFrame(sched.astype(int), index=pump_labels,
+                              columns=[f"h{t}" for t in range(sched.shape[1])])
+            st.dataframe(df, use_container_width=True)
+            st.caption("Coupled pump on/off schedule (1 = on).")
     with tabs[3]:
         fig = P.pv_reactive_chart(cpl.pv_q, cpl.pv_p, cpl.pv_buses, fmeta["orig_id"])
         if fig:

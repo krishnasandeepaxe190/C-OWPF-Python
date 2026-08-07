@@ -15,8 +15,16 @@ def prv_states(prv: dict) -> np.ndarray:
 
 def prv_panel(wdn, heads: np.ndarray, flows: np.ndarray, prv: dict,
               heads_ep: np.ndarray = None, flows_ep: np.ndarray = None,
+              heads_rule: np.ndarray = None, flows_rule: np.ndarray = None,
               valve_pos: int = 0):
-    """2x2 PRV panel for one valve (paper Fig. 4-style, plus the state timeline)."""
+    """2x2 PRV panel for one valve (paper Fig. 4-style, plus the state timeline).
+
+    ``heads_ep``/``flows_ep``: EPANET replay of the OPTIMIZED schedule (validation).
+    ``heads_rule``/``flows_rule``: EPANET running its OWN rule-based controls -- a
+    DIFFERENT schedule, overlaid so the pressure regulation the rules achieve can
+    be compared with the optimized regulation (and cost differences explained:
+    the rules hold the .inp setting, the optimizer holds the user's h_set).
+    """
     T = wdn.time
     hrs = list(range(T))
     lk = int(wdn.M.valve_index[valve_pos])
@@ -39,10 +47,14 @@ def prv_panel(wdn, heads: np.ndarray, flows: np.ndarray, prv: dict,
                      range=[-0.3, 2.3], row=1, col=1)
 
     fig.add_trace(go.Scatter(x=hrs, y=hdn, mode="lines+markers",
-                             name="downstream head (model)"), row=1, col=2)
+                             name="optimized (model)"), row=1, col=2)
     if heads_ep is not None:
         fig.add_trace(go.Scatter(x=hrs, y=down_row @ heads_ep[:, :T], mode="markers",
-                                 marker_symbol="x", name="EPANET"), row=1, col=2)
+                                 marker_symbol="x", name="EPANET replay"), row=1, col=2)
+    if heads_rule is not None:
+        fig.add_trace(go.Scatter(x=hrs, y=down_row @ heads_rule[:, :T],
+                                 mode="lines", line=dict(dash="dot", width=2),
+                                 name="EPANET rules"), row=1, col=2)
     fig.add_hline(y=hset, line_dash="dash", line_color="#d62728",
                   annotation_text=f"h_set = {hset:.1f} ft", row=1, col=2)
 
@@ -50,11 +62,18 @@ def prv_panel(wdn, heads: np.ndarray, flows: np.ndarray, prv: dict,
                              showlegend=False), row=2, col=1)
 
     fig.add_trace(go.Scatter(x=hrs, y=fval, mode="lines+markers",
-                             name="valve flow (model)"), row=2, col=2)
+                             name="valve flow (optimized)", showlegend=False),
+                  row=2, col=2)
     if flows_ep is not None:
         fig.add_trace(go.Scatter(
             x=hrs, y=(wdn.M.Pi_prime_valve @ flows_ep[:, :T])[valve_pos],
-            mode="markers", marker_symbol="x", name="EPANET"), row=2, col=2)
+            mode="markers", marker_symbol="x", name="EPANET replay",
+            showlegend=False), row=2, col=2)
+    if flows_rule is not None:
+        fig.add_trace(go.Scatter(
+            x=hrs, y=(wdn.M.Pi_prime_valve @ flows_rule[:, :T])[valve_pos],
+            mode="lines", line=dict(dash="dot", width=2), name="EPANET rules",
+            showlegend=False), row=2, col=2)
 
     vid = str(wdn.raw.link_name_id[lk])
     up = str(wdn.raw.node_name_id[wdn.raw.from_node[lk]])

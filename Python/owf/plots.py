@@ -72,18 +72,35 @@ def plot_pump_schedule(wdn: WDN, result: OWFResult):
     fig, axes = plt.subplots(n_p + 1, 1, figsize=(10, 2.2 * (n_p + 1)), sharex=True)
     axes = np.atleast_1d(axes)
 
+    speed = getattr(result, "speed", None)
     for p in range(n_p):
         ax = axes[p]
-        ax.step(hours, result.onoff[p, :], where="mid", color="tab:green", lw=2)
-        ax.fill_between(hours, 0, result.onoff[p, :], step="mid", alpha=0.3,
-                        color="tab:green")
-        ax.set_ylim(-0.1, 1.15)
-        ax.set_yticks([0, 1])
-        ax.set_yticklabels(["off", "on"])
-        ax.set_ylabel(f"pump {p + 1}")
+        is_vsp = (speed is not None and bool(wdn.pump.is_vsp[p]))
+        if is_vsp:
+            # VSP: bar height = relative speed omega when the pump is on
+            prof = result.onoff[p, :] * speed[p, :T]
+            ax.step(hours, prof, where="mid", color="tab:blue", lw=2)
+            ax.fill_between(hours, 0, prof, step="mid", alpha=0.3, color="tab:blue")
+            for t in range(T):
+                if result.onoff[p, t] > 0.5:
+                    ax.annotate(f"{speed[p, t]:.2f}", (t, prof[t]),
+                                textcoords="offset points", xytext=(0, 4),
+                                ha="center", fontsize=7, color="tab:blue")
+            ax.set_ylim(-0.1, 1.25)
+            ax.set_yticks([0, 0.5, 1.0])
+            ax.set_ylabel(f"pump {p + 1} (VSP ω)")
+        else:
+            ax.step(hours, result.onoff[p, :], where="mid", color="tab:green", lw=2)
+            ax.fill_between(hours, 0, result.onoff[p, :], step="mid", alpha=0.3,
+                            color="tab:green")
+            ax.set_ylim(-0.1, 1.15)
+            ax.set_yticks([0, 1])
+            ax.set_yticklabels(["off", "on"])
+            ax.set_ylabel(f"pump {p + 1}")
         ax.grid(True, alpha=0.3)
         if p == 0:
-            ax.set_title("Optimized pump schedule vs price")
+            ax.set_title("Optimized pump schedule vs price"
+                         + (" (VSP bars show relative speed ω)" if speed is not None else ""))
 
     ax = axes[-1]
     ax.plot(hours, wdn.price_final, "o-", color="tab:orange")

@@ -109,8 +109,14 @@ def _render_case(st, rec) -> None:
                             key=f"prv_{rec['id']}")
             st.caption("Three-state PRV (closed / open / active): when **active** the "
                        "valve pins its downstream junction to h_set by absorbing "
-                       "R_PRV of head; ✕ markers are EPANET's replay of the same "
-                       "schedule — the model matches the exact hydraulics.")
+                       "R_PRV of head. ✕ markers = EPANET **replay** of the optimized "
+                       "schedule (model accuracy); dotted line = EPANET's own "
+                       "**rule-based** operation (a *different* schedule at the .inp "
+                       "setting). Compare the two regulations: if your h_set is higher "
+                       "than the rules' setting, holding that extra downstream pressure "
+                       "needs more pumped head — which is why the optimized cost can "
+                       "*exceed* the rule-based baseline. Same h_set → the optimizer "
+                       "matches or beats the rules.")
     with tabs[0]:
         md = rec["map_data"]
         if "flows" in md:
@@ -263,11 +269,18 @@ def render_water(st) -> None:
                     and getattr(result, "prv", None) and wdn.n_valves):
                 try:
                     from owf.validation import validate_schedule
+                    from owf.epanet_io import run_epanet
                     from .prv_plots import prv_panel
                     rep = validate_schedule(wdn, result)
+                    # EPANET's own rule-based operation (a DIFFERENT schedule):
+                    # shows the pressure regulation the rules achieve, so a cost
+                    # increase vs the baseline is explained by the pressure target.
+                    fl_r, hd_r, _, _ = run_epanet(wdn.raw)
                     prv_fig = prv_panel(wdn, result.heads, result.flows, result.prv,
                                         heads_ep=rep.heads_epanet,
-                                        flows_ep=rep.flows_epanet)
+                                        flows_ep=rep.flows_epanet,
+                                        heads_rule=hd_r[: wdn.time].T,
+                                        flows_rule=fl_r[: wdn.time].T)
                 except Exception:
                     prv_fig = None
             st.session_state.water_records.append({
