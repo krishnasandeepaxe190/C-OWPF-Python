@@ -1,0 +1,23 @@
+# Keep the build context small and reproducible.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Run artifacts / logs / solver temp files (regenerated at runtime)
+outputs/
+*.log
+*.rpt
+*.bin
+*_temp.*
+*.stackdump
+
+# LaTeX build artifacts from docs/ (only the committed .pdf/.tex are needed)
+docs/*.aux
+docs/*.out
+docs/*.toc
+
+# Local dev
+.streamlit/secrets.toml

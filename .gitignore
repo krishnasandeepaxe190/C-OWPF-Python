@@ -1,6 +1,8 @@
 # Only the Python translation is tracked/pushed to GitHub.
 # The MATLAB source and manuscript documents stay local.
 /Matlab/
+# IEEE Access manuscript sources (under revision -- do not publish to the public repo)
+/Titlelabel1/
 
 # Python runtime artifacts
 __pycache__/
