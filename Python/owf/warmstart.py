@@ -343,23 +343,43 @@ def optimize_schedule(
             # may understate it), and its heads/flows reproduce EPANET.
             best, best_cost, best_slack = final, true_energy_cost(wdn, final.flows), final_slack
 
-    # --- honest validation: the soft-bounds ranking can rate a tank-draining
-    # schedule as "feasible"; the truth is EPANET. If the winner does not
-    # reproduce in EPANET (huge head error = it drains a tank / diverges), fall
-    # back to the duty-preserving load-shift schedule, which is tank-safe by
-    # construction. Applied on large networks where this failure mode appears.
-    if wdn.n_nodes > 100 and best.flows is not None:
+    # --- honest EPANET validation of the winner (large networks) --------------
+    # The soft-bounds ranking can rate a tank-draining schedule as "feasible", but
+    # EPANET is the ground truth: imposing such a schedule back in EPANET gives a
+    # large head error (a tank drifts). So validate the candidate schedules by
+    # re-running them in EPANET and keep the CHEAPEST one that actually reproduces
+    # (replay error small) -- the reported schedule is then hydraulically
+    # consistent, not merely soft-feasible.
+    if wdn.n_nodes > 100:
         try:
             from .validation import validate_schedule
-            if validate_schedule(wdn, best).max_abs_head > 50.0:
-                ls = _apply_availability(wdn, np.round(duty_preserving_schedule(wdn)))
-                r, c, sl = evaluate("load_shift_fallback", ls)
-                if r is not None and sl <= feas_tol:
+            REPLAY_OK = 5.0  # ft; a faithful reproduction is well under this
+            ep_sched = _apply_availability(wdn, np.round(base.onoff))
+            ls = _apply_availability(wdn, np.round(duty_preserving_schedule(wdn)))
+            r_ls, c_ls, _ = evaluate("load_shift", ls)
+            options = [("winner", best, best_sched, best_cost),
+                       ("epanet", base, ep_sched, baseline_cost),
+                       ("load_shift", r_ls, ls, c_ls)]
+            scored = []
+            for name, r, s, c in options:
+                if r is None or r.flows is None:
+                    continue
+                try:
+                    dh = float(validate_schedule(wdn, r).max_abs_head)
+                except Exception:
+                    dh = float("inf")
+                # reproduces-EPANET first, then cheapest true cost
+                scored.append(((0 if dh <= REPLAY_OK else 1), c, dh, name, r, s))
+            if scored:
+                scored.sort(key=lambda t: (t[0], t[1]))
+                _, c, dh, name, r, s = scored[0]
+                if name != "winner":
                     if verbose:
-                        print(f"[opt] winner failed EPANET check -> fell back to "
-                              f"load_shift (cost={c:.5f} slack={sl:.3f})")
-                    best, best_cost, best_slack, best_sched = r, c, sl, ls
-                    trace.append(("load_shift_fallback", c, sl))
+                        print(f"[opt] winner failed EPANET check -> using {name} "
+                              f"(cost={c:.5f} replay dHead={dh:.2f} ft)")
+                    best, best_cost, best_sched = r, c, s
+                    best_slack = r.max_slack if np.isfinite(r.max_slack) else 0.0
+                    trace.append((f"epanet_validated:{name}", c, dh))
         except Exception as exc:
             if verbose:
                 print(f"[opt] validation fallback skipped: {exc}")
