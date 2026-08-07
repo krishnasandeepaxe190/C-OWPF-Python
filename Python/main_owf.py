@@ -64,6 +64,7 @@ MODES = {
 MODE_SUGGESTION = {
     8: ("direct", "optimize"),
     3: ("direct", "optimize"),
+    108: ("warmstart", "optimize"),
     11: ("warmstart", "optimize"),
     36: ("warmstart", "optimize"),
     97: ("epanet", "optimize"),
@@ -73,6 +74,7 @@ MODE_SUGGESTION = {
 NET_BLURB = {
     8: "8-node tutorial -- tree, 1 pump, 1 tank",
     3: "3-node -- tree, 1 pump, 1 tank",
+    108: "8-node + PRV -- pressure-reducing valve (junction 6->9, 20 psi)",
     11: "Net1 -- looped, 1 pump, 1 tank",
     36: "Net2 -- looped, 1 pump, 1 tank",
     97: "Net3 -- looped, 2 pumps, 3 tanks, switched bypass",

@@ -41,12 +41,18 @@ class Matrices:
     Pi_prime_bypass: np.ndarray       # (Nb x L) selects bypass flows
     Omega_bypass: np.ndarray          # (Nb x Nb) diagonal bypass resistance
     S_bypass_pump: np.ndarray         # (Nb x Pu) bypass -> controlling pump
+    # pressure-reducing valves (PRVs); empty for most networks
+    valve_index: np.ndarray           # (Nv,) 0-based link indices
+    Pi_prime_valve: np.ndarray        # (Nv x L) selects valve flows
+    valve_up_sel: np.ndarray          # (Nv x N) picks the upstream node head
+    valve_down_sel: np.ndarray        # (Nv x N) picks the downstream node head
 
 
 def build_matrices(
     raw: RawNetwork,
     bypass_index: np.ndarray = None,
     bypass_pump_pos: np.ndarray = None,
+    valve_index: np.ndarray = None,
 ) -> Matrices:
     N = raw.n_nodes
     L = raw.n_links
@@ -59,15 +65,19 @@ def build_matrices(
                     else np.array([], dtype=int))
     bypass_pump_pos = (np.asarray(bypass_pump_pos, dtype=int) if bypass_pump_pos is not None
                        else np.array([], dtype=int))
+    valve_index = (np.asarray(valve_index, dtype=int) if valve_index is not None
+                   else np.array([], dtype=int))
 
-    # pipes = links that are not pumps, not permanently closed, and not switched
-    # bypasses (those get their own gated head-loss constraint). Closed pipes
-    # carry no head loss and are pinned to zero flow separately.
+    # pipes = links that are not pumps, not permanently closed, not switched
+    # bypasses, and not valves (each of those gets its own gated head constraint).
+    # Closed pipes carry no head loss and are pinned to zero flow separately.
     excluded = np.zeros(L, dtype=bool)
     excluded[pump_index] = True
     excluded[raw.closed_pipe_index] = True
     if bypass_index.size:
         excluded[bypass_index] = True
+    if valve_index.size:
+        excluded[valve_index] = True
     pipe_index = np.where(~excluded)[0]
 
     # Pi (N x L): +1 at from-node, -1 at to-node
@@ -108,6 +118,16 @@ def build_matrices(
     for i, p in enumerate(bypass_pump_pos):
         S_bypass_pump[i, p] = 1.0
 
+    # PRV matrices: select the valve flow and the up/down node heads. The valve's
+    # own head relation is the big-M PRV model (not the pipe energy equation), so
+    # valves are excluded from pipe_index above but kept in Pi (mass balance).
+    Pi_prime_valve = np.eye(L)[valve_index, :] if valve_index.size else np.zeros((0, L))
+    valve_up_sel = np.zeros((valve_index.size, N))
+    valve_down_sel = np.zeros((valve_index.size, N))
+    for i, lk in enumerate(valve_index):
+        valve_up_sel[i, raw.from_node[lk]] = 1.0
+        valve_down_sel[i, raw.to_node[lk]] = 1.0
+
     return Matrices(
         Pi=Pi, Pi_telda=Pi_telda, Pi_prime=Pi_prime, Pi_reduced=Pi_reduced,
         Lambda=Lambda, Theta=Theta, Tau=Tau, Kappa=Kappa, Omega=Omega,
@@ -115,4 +135,6 @@ def build_matrices(
         bypass_index=bypass_index, Pi_telda_bypass=Pi_telda_bypass,
         Pi_prime_bypass=Pi_prime_bypass, Omega_bypass=Omega_bypass,
         S_bypass_pump=S_bypass_pump,
+        valve_index=valve_index, Pi_prime_valve=Pi_prime_valve,
+        valve_up_sel=valve_up_sel, valve_down_sel=valve_down_sel,
     )

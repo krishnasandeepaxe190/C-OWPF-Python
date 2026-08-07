@@ -66,6 +66,13 @@ NETWORKS: dict[int, NetworkSpec] = {
         name="threenode",
         inp_relpath="threenode/Threenodes-gp_largepump.inp",
     ),
+    108: NetworkSpec(
+        net_num=108,
+        name="eightnode_prv",
+        # 8-node tutorial with a pressure-reducing valve (PRV 10, junction 6 -> 9,
+        # setting 20 psi -> downstream head setpoint 766.1 ft). Demonstrates the PRV.
+        inp_relpath="eightnode/tutorial8node_prv.inp",
+    ),
     11: NetworkSpec(
         net_num=11,
         name="net1",

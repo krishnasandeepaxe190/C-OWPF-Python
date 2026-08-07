@@ -32,6 +32,7 @@ class RawNetwork:
     link_pump_index: np.ndarray      # 0-based
     link_pump_count: int
     link_valve_index: np.ndarray     # 0-based
+    link_setting: np.ndarray         # per-link initial setting (PRV = pressure setpoint)
     pump_coefficients: np.ndarray    # (Pu, 3) [h0, r, v] derived from EPANET curves
     closed_pipe_index: np.ndarray    # 0-based pipes with initial status Closed
 
@@ -151,6 +152,12 @@ def read_inp(inp_path) -> RawNetwork:
     link_pump_count = int(d.getLinkPumpCount())
     valve_raw = np.asarray(d.getLinkValveIndex(), dtype=float).ravel()
     link_valve_index = (valve_raw.astype(int) - 1) if valve_raw.size else np.array([], dtype=int)
+    # per-link initial setting: for a PRV this is the downstream pressure setpoint
+    # (in the network's pressure units, e.g. psi); pipes/pumps report 0/speed.
+    try:
+        link_setting = np.asarray(d.getLinkInitialSetting(), dtype=float).ravel()
+    except Exception:
+        link_setting = np.zeros(len(link_name_id))
     pump_coefficients = _derive_pump_coefficients(d, link_pump_count)
 
     # Permanently-closed pipes (EPANET initial status Closed, non-pump): they carry
@@ -208,6 +215,7 @@ def read_inp(inp_path) -> RawNetwork:
         link_pump_index=link_pump_index,
         link_pump_count=link_pump_count,
         link_valve_index=link_valve_index,
+        link_setting=link_setting,
         pump_coefficients=pump_coefficients,
         closed_pipe_index=closed_pipe_index,
         node_index=node_index,

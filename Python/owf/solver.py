@@ -51,6 +51,11 @@ class Model:
     Speed: Optional[cp.Variable] = None
     WW: Optional[cp.Variable] = None
     DPrime: Optional[cp.Parameter] = None
+    # Pressure-reducing valves: active/open binaries + valve head-loss variable.
+    # Present only when the network has a PRV.
+    x_act: Optional[cp.Variable] = None
+    x_open: Optional[cp.Variable] = None
+    R_prv: Optional[cp.Variable] = None
 
 
 @dataclass
@@ -100,6 +105,10 @@ def _build_model(wdn: WDN) -> Model:
         model.Speed = cp.Variable((wdn.n_pumps, T), name="Speed")
         model.WW = cp.Variable((wdn.n_pumps, T), name="WW")
         model.DPrime = cp.Parameter((wdn.n_pumps, T), name="DPrime")
+    if wdn.n_valves:
+        model.x_act = cp.Variable((wdn.n_valves, T), boolean=True, name="x_act")
+        model.x_open = cp.Variable((wdn.n_valves, T), boolean=True, name="x_open")
+        model.R_prv = cp.Variable((wdn.n_valves, T), nonneg=True, name="R_prv")
     if wdn.config.soft_bounds:
         model.s_jlo = cp.Variable((wdn.n_junctions, T), nonneg=True, name="s_jlo")
         model.s_jhi = cp.Variable((wdn.n_junctions, T), nonneg=True, name="s_jhi")

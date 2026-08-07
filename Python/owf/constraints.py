@@ -192,6 +192,47 @@ def vsp_speed_mccormick(model, wdn):
     ]
 
 
+def pressure_reducing_valves(model, wdn):
+    """Three-state PRV model via two binaries (paper eq. PRVoperation).
+
+    x_act (active/regulating) and x_open (fully open) with x_act + x_open <= 1
+    (both zero -> closed). h_set is the downstream head setpoint; R_prv is the
+    valve head loss. Big-M switches the three states:
+      * active (y=1): downstream head pinned to h_set, upstream >= h_set, R_prv > 0;
+      * open   (z=1): upstream <= h_set, zero head loss (h_up = h_down);
+      * closed (0,0): zero flow, up/down heads decoupled.
+    """
+    if wdn.n_valves == 0:
+        return []
+    Mb = wdn.config.big_m
+    T = wdn.time
+    y, z, R = model.x_act, model.x_open, model.R_prv
+    HSET = np.tile(wdn.valve_hset[:, None], (1, T))
+    FMAX = np.tile(wdn.valve_fmax[:, None], (1, T))
+    hup = wdn.M.valve_up_sel @ model.Heads        # (Nv x T) upstream node head
+    hdn = wdn.M.valve_down_sel @ model.Heads      # downstream node head
+    fval = wdn.M.Pi_prime_valve @ model.Flows     # valve flow (>=0, from up to down)
+    yz = y + z
+    return [
+        yz <= 1,
+        # head-loss link: (h_up - h_down) = R_prv when not closed; free when closed
+        (hup - hdn) - R <= Mb * (1 - yz),
+        (hup - hdn) - R >= -Mb * (1 - yz),
+        # flow only when open or active (check-valve direction: f >= 0)
+        fval <= cp.multiply(FMAX, yz),
+        fval >= 0,
+        # upstream head: active -> h_up >= h_set ; open -> h_up <= h_set
+        hup >= HSET - Mb * (1 - y),
+        hup <= HSET + Mb * (1 - z),
+        # downstream head pinned to h_set when active
+        hdn >= HSET - Mb * (1 - y),
+        hdn <= HSET + Mb * (1 - y),
+        # head loss is positive only in the active state
+        R >= 1e-6 * y,
+        R <= Mb * y,
+    ]
+
+
 def junction_head_bounds(model, wdn):
     """H_min <= junction heads <= H_max."""
     K = wdn.M.Kappa
@@ -249,6 +290,7 @@ def build_constraints(model, wdn, include_mass_balance: bool = True, soft: bool 
     cons += pump_power(model, wdn)
     cons += pump_bigm(model, wdn)
     cons += vsp_speed_mccormick(model, wdn)
+    cons += pressure_reducing_valves(model, wdn)
     if soft:
         cons += tank_head_bounds_soft(model, wdn)
         cons += junction_head_bounds_soft(model, wdn)

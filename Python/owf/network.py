@@ -52,6 +52,11 @@ class WDN:
     int_eps: np.ndarray                # initial stacked iterate [H;Q;OnOff]
     int_onoff: np.ndarray              # (Pu x T)
     pump_avail: dict = None            # pump_pos -> (start_hour, end_hour) availability
+    # Pressure-reducing valves (PRVs). ``valve_hset`` is the downstream head setpoint
+    # (ft, absolute); ``valve_fmax`` is a flow bound for the big-M model. Empty when
+    # the network has no PRV.
+    valve_hset: np.ndarray = None      # (Nv,)
+    valve_fmax: np.ndarray = None      # (Nv,)
 
     # convenient sizes
     @property
@@ -85,6 +90,10 @@ class WDN:
     @property
     def n_vsp(self) -> int:
         return int(np.sum(self.pump.is_vsp))
+
+    @property
+    def n_valves(self) -> int:
+        return 0 if self.valve_hset is None else len(self.valve_hset)
 
 
 def _pump_params(raw: RawNetwork, spec: cfg.NetworkSpec) -> PumpParams:
@@ -178,6 +187,28 @@ def _resolve_vsp(raw: RawNetwork, pump: PumpParams, config: SolverConfig) -> Non
         pump.omega_max[pos] = omax
 
 
+PSI_TO_FT = 2.30724939   # 1 psi of water = 2.30724939 ft of head
+
+
+def _resolve_valves(raw: RawNetwork) -> tuple:
+    """PRV link indices and downstream head setpoints.
+
+    A PRV regulates its downstream junction to ``h_set = E_down + P_set``, where
+    ``E_down`` is the downstream node elevation and ``P_set`` is the valve setting
+    converted from psi to ft (paper: h^set = E_j + P^set).
+    """
+    if not raw.link_valve_index.size:
+        return np.array([], dtype=int), np.zeros(0)
+    vidx, hset = [], []
+    for lk in raw.link_valve_index:
+        if str(raw.link_type[lk]).upper() != "PRV":
+            continue                                    # only PRVs are modeled
+        down = int(raw.to_node[lk])
+        hset.append(float(raw.node_elevations[down] + raw.link_setting[lk] * PSI_TO_FT))
+        vidx.append(int(lk))
+    return np.array(vidx, dtype=int), np.array(hset, dtype=float)
+
+
 def _resolve_availability(raw: RawNetwork, spec: cfg.NetworkSpec) -> dict:
     """Map spec.pump_availability {pump_id: (start,end)} to {pump_pos: (start,end)}."""
     if not spec.pump_availability:
@@ -202,7 +233,13 @@ def setup(config: SolverConfig) -> WDN:
         raw.closed_pipe_index = np.setdiff1d(raw.closed_pipe_index, bypass_index)
     pump_avail = _resolve_availability(raw, spec)
 
-    M = build_matrices(raw, bypass_index, bypass_pump_pos)
+    # PRVs: resolve, and drop them from the permanently-closed set (a valve's state
+    # is governed by its PRV binaries, not the closed-pipe zero-flow pin).
+    valve_index, valve_hset = _resolve_valves(raw)
+    if valve_index.size:
+        raw.closed_pipe_index = np.setdiff1d(raw.closed_pipe_index, valve_index)
+
+    M = build_matrices(raw, bypass_index, bypass_pump_pos, valve_index=valve_index)
 
     # One EPANET run supplies the demand profile and the choice=1 initial point.
     flows_ep, heads_ep, _, demand_ep = run_epanet(raw)
@@ -235,9 +272,15 @@ def setup(config: SolverConfig) -> WDN:
         raw, M, pump, bounds, time, config.choice, flows_ep, heads_ep
     )
 
+    # PRV flow bound for the big-M model: generous relative to operating flows.
+    valve_fmax = (np.full(valve_index.size,
+                          max(1.0e3, 2.0 * float(np.abs(flows_ep[:time]).max())))
+                  if valve_index.size else None)
+
     return WDN(
         config=config, spec=spec, raw=raw, M=M, pump=pump,
         tank=tank, bounds=bounds, time=time, price_final=price_final,
         junction_demand_profile=junction_demand_profile, lin0=lin0,
         int_eps=int_eps, int_onoff=int_onoff, pump_avail=pump_avail,
+        valve_hset=(valve_hset if valve_index.size else None), valve_fmax=valve_fmax,
     )
