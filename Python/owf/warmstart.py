@@ -138,11 +138,32 @@ def _apply_availability(wdn: WDN, sched: np.ndarray) -> np.ndarray:
     return sched
 
 
+def duty_preserving_schedule(wdn: WDN) -> np.ndarray:
+    """Load-shift EPANET's operation: keep each pump's total on-hours but move
+    them to the cheapest hours.
+
+    The price-quantile candidates run pumps *fewer* hours (only the cheapest),
+    which under-pumps and drains the tanks below their minimum. Preserving each
+    pump's EPANET duty and merely re-timing it to cheap hours keeps the tanks in
+    bounds while still cutting the time-of-use bill -- the feasible way to save on
+    high-duty-cycle systems (e.g. BWSN's 11 h / 21 h pumps).
+    """
+    T = wdn.time
+    price = np.asarray(wdn.price_final, dtype=float)
+    order = np.argsort(price)                      # cheapest hours first
+    ep = np.round(epanet_default_onoff(wdn))       # EPANET duty per pump
+    s = np.zeros((wdn.n_pumps, T))
+    for p in range(wdn.n_pumps):
+        k = int(ep[p].sum())
+        s[p, order[:k]] = 1.0                      # same duty, cheapest hours
+    return s
+
+
 def price_threshold_schedules(wdn: WDN) -> dict[str, np.ndarray]:
     """Candidate schedules that run pumps only during the cheapest hours.
 
-    A family of price quantiles (plus all-on) -- physically motivated for
-    time-of-use pricing and cheap to enumerate.
+    A family of price quantiles (plus all-on and a duty-preserving load-shift) --
+    physically motivated for time-of-use pricing and cheap to enumerate.
     """
     T, P = wdn.time, wdn.n_pumps
     price = np.asarray(wdn.price_final, dtype=float)
@@ -152,12 +173,16 @@ def price_threshold_schedules(wdn: WDN) -> dict[str, np.ndarray]:
         out[f"cheapest_{int(q * 100)}pct"] = np.tile(
             (price <= thresh).astype(float), (P, 1)
         )
+    try:
+        out["load_shift"] = duty_preserving_schedule(wdn)   # feasible TOU shift
+    except Exception:
+        pass
     return out
 
 
 def optimize_schedule(
     wdn: WDN,
-    inner_iter: int = 15,
+    inner_iter: Optional[int] = None,
     feas_tol: float = 2.0,
     polish: bool = True,
     max_flips: int = 30,
@@ -183,6 +208,15 @@ def optimize_schedule(
 
     Returns (best result, info dict with baseline/best cost, savings and trace).
     """
+    # Large networks converge slowly (tank-driven fixed point); a candidate scored
+    # with too few inner iterations is mis-ranked. Auto-scale when not specified.
+    # Each 1-opt flip is a full converge, so cap the polish depth on big networks.
+    large = wdn.n_nodes > 100
+    if inner_iter is None:
+        inner_iter = 100 if large else 15
+    if large:
+        max_flips = min(max_flips, 6)
+
     def evaluate(name, sched, seed_flows=None, seed_heads=None):
         sched = _apply_availability(wdn, np.round(sched))
         if seed_flows is None:
@@ -226,8 +260,13 @@ def optimize_schedule(
         if better and r is not None:
             best, best_cost, best_slack, best_sched, best_key = r, cost, slack, s, key
 
-    # MILP proposal at the incumbent's linearization (cheap; sometimes helps)
+    # MILP proposal at the incumbent's linearization (cheap; sometimes helps).
+    # Skip on large networks: the free-binary MILP over many nodes is memory-heavy
+    # (SCIP can OOM), and the price/load-shift candidates + polish already cover the
+    # savings there.
     try:
+        if wdn.n_nodes > 100:
+            raise StopIteration(f"large network ({wdn.n_nodes} nodes)")
         lin = linearize(best.flows, wdn.M, wdn.pump)
         cfg = replace(wdn.config, fixed_schedule=None, soft_bounds=True, damping=1.0,
                       penalty_weight=1.0e3, penalty_growth=1.0, penalty_max=1.0e4,
@@ -303,6 +342,27 @@ def optimize_schedule(
             # is the true cost (candidate solves are under-converged for speed and
             # may understate it), and its heads/flows reproduce EPANET.
             best, best_cost, best_slack = final, true_energy_cost(wdn, final.flows), final_slack
+
+    # --- honest validation: the soft-bounds ranking can rate a tank-draining
+    # schedule as "feasible"; the truth is EPANET. If the winner does not
+    # reproduce in EPANET (huge head error = it drains a tank / diverges), fall
+    # back to the duty-preserving load-shift schedule, which is tank-safe by
+    # construction. Applied on large networks where this failure mode appears.
+    if wdn.n_nodes > 100 and best.flows is not None:
+        try:
+            from .validation import validate_schedule
+            if validate_schedule(wdn, best).max_abs_head > 50.0:
+                ls = _apply_availability(wdn, np.round(duty_preserving_schedule(wdn)))
+                r, c, sl = evaluate("load_shift_fallback", ls)
+                if r is not None and sl <= feas_tol:
+                    if verbose:
+                        print(f"[opt] winner failed EPANET check -> fell back to "
+                              f"load_shift (cost={c:.5f} slack={sl:.3f})")
+                    best, best_cost, best_slack, best_sched = r, c, sl, ls
+                    trace.append(("load_shift_fallback", c, sl))
+        except Exception as exc:
+            if verbose:
+                print(f"[opt] validation fallback skipped: {exc}")
 
     info = {
         "baseline_cost": baseline_cost,

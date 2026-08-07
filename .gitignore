@@ -31,3 +31,6 @@ Python/results/
 Thumbs.db
 .vscode/
 .idea/
+
+# cygwin crash dumps
+*.stackdump

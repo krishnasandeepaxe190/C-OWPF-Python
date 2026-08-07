@@ -126,6 +126,11 @@ def _controls(st):
         st.caption(MODES[mode])
     if net == 97 and mode == "optimize":
         st.warning("Net3 optimize takes ~3 min and honestly reports ~0% savings.")
+    if net == 126:
+        st.info("BWSN is a large network (126 junctions, 2 pumps, 2 tanks, 1 reservoir). "
+                "Use **optimize** — its binary fixed-speed pumps must switch OFF when a "
+                "tank is full (EPANET throttles instead), so 'epanet' mode overfills a "
+                "tank. Optimize takes a few minutes.")
     with st.expander("EPANET operating rules (cost baseline)"):
         cr = read_controls_rules(NETWORKS[net].inp_path)
         if cr["CONTROLS"]:

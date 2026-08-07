@@ -49,7 +49,8 @@ def linearize(flows: np.ndarray, M: Matrices, pump: PumpParams) -> LinPoint:
     v = pump.v_m[:, None]
     absf = np.abs(pump_flows)                 # pump flows are >= 0; abs guards f^v
 
-    # Hazen-Williams pipe head loss linearization
+    # Hazen-Williams pipe head loss linearization (minor losses are ignored, to
+    # match the study; the EPANET data files carry no minor-loss coefficients).
     Cp = pipe_flows * (M.Omega @ np.abs(pipe_flows) ** 0.852 - np.ones_like(pipe_flows))
 
     # same linearization for switched-bypass pipes (if any)

@@ -96,7 +96,7 @@ def build_matrices(
     for j, n in enumerate(junction_index):
         Kappa[j, n] = 1.0
 
-    Omega = np.diag(raw.link_resistance[pipe_index])   # (P x P)
+    Omega = np.diag(raw.link_resistance[pipe_index])   # (P x P) Hazen-Williams
     Delta = np.diag(raw.tank_area)                     # (Tk x Tk)
 
     # switched-bypass matrices

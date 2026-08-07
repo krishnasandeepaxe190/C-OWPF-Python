@@ -67,6 +67,7 @@ MODE_SUGGESTION = {
     11: ("warmstart", "optimize"),
     36: ("warmstart", "optimize"),
     97: ("epanet", "optimize"),
+    126: ("optimize", "epanet"),
 }
 
 NET_BLURB = {
@@ -75,6 +76,7 @@ NET_BLURB = {
     11: "Net1 -- looped, 1 pump, 1 tank",
     36: "Net2 -- looped, 1 pump, 1 tank",
     97: "Net3 -- looped, 2 pumps, 3 tanks, switched bypass",
+    126: "BWSN -- large looped, 2 pumps, 2 tanks, 1 reservoir (126 junctions)",
 }
 
 

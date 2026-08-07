@@ -83,6 +83,14 @@ NETWORKS: dict[int, NetworkSpec] = {
         bypasses={"330": "335"},          # bypass pipe 330 opens when pump 335 is off
         pump_availability={"10": (1, 15)},  # Lake pump 10 available hours 1..14
     ),
+    126: NetworkSpec(
+        net_num=126,
+        name="bwsn",
+        # Large looped system: 126 junctions / 173 pipes, 1 reservoir, 2 tanks,
+        # 2 pumps (PUMP-170, PUMP-172) with EPANET head curves. OWF-prepared
+        # "Shen large-pump / terminal-head" variant of the BWSN benchmark.
+        inp_relpath="bwsn/BWSN_largepump.inp",
+    ),
     # KY3 (275 nodes / 371 links, 5 pumps, 3 reservoirs, 3 tanks) is archived under
     # data/archive/ky3/. Its pumps carry no EPANET head curve, so it needs explicit
     # [h0, r, v] coefficients before it can be registered here.
