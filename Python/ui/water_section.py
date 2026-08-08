@@ -510,6 +510,13 @@ def render_water(st) -> None:
                              and getattr(result, "iterates", None) else None),
                 "teach_wdn": (wdn if teach and result is not None
                               and getattr(result, "iterates", None) else None),
+                # for the DSO hand-off: this run's optimized pump electrical power
+                "net": net, "horizon": wdn.time,
+                "pump_link_ids": [str(wdn.raw.link_name_id[i])
+                                  for i in wdn.raw.link_pump_index],
+                "ppump_true": (np.abs(np.asarray(result.ppump_true)[:, :wdn.time])
+                               if result is not None and result.flows is not None
+                               else None),
                 "exports": (_build_exports(case, wdn, result)
                             if result is not None and result.flows is not None else {}),
             })
@@ -521,6 +528,35 @@ def render_water(st) -> None:
     latest = records[-1]
     st.subheader(f"Result — run {latest['id']}: {latest['case'].label}")
     _render_case(st, latest)
+
+    # --- transmit schedules to the DSO (Power tab) -----------------------------
+    if latest.get("ppump_true") is not None:
+        with st.expander("📡 Transmit pump schedules to the DSO (Power tab)"):
+            st.caption("The water operator publishes its pump electrical load to the "
+                       "distribution system operator. Choose which schedule(s) to "
+                       "transmit — the Power tab acknowledges them and solves its "
+                       "OPF with the transmitted load (both are compared side by "
+                       "side if you send both).")
+            opts = ["EPANET rule-based (baseline)",
+                    f"C-OWF optimized (run {latest['id']})"]
+            chosen = st.multiselect("Schedules to transmit", opts, default=opts,
+                                    key="w_tx_sel")
+            if st.button("📡 Transmit to Power tab", key="w_tx_btn",
+                         disabled=not chosen):
+                from .power_section import _epanet_pump_kw
+                schedules = {}
+                if any(c.startswith("EPANET") for c in chosen):
+                    pk, _, _ = _epanet_pump_kw(latest["net"])
+                    schedules["EPANET rules"] = pk[:, :latest["horizon"]]
+                if any(c.startswith("C-OWF") for c in chosen):
+                    schedules["C-OWF optimized"] = latest["ppump_true"]
+                st.session_state["dso_handoff"] = dict(
+                    net=latest["net"], label=NETWORKS[latest["net"]].name,
+                    horizon=latest["horizon"], pump_ids=latest["pump_link_ids"],
+                    schedules=schedules, case=latest["case"].label)
+                st.success(f"Transmitted **{len(schedules)} schedule(s)** to the DSO "
+                           f"— open **⚡ Power**, tick *Impose water pump load*, and "
+                           f"the transmitted source is pre-selected.")
 
     st.subheader("Session comparison")
     df = _session_df(records)

@@ -152,17 +152,25 @@ def render_coupled(st) -> None:
         # --- decoupled: water schedule, then imposed on the feeder --------------
         # Thorough uses the full water-optimal schedule; Fast uses EPANET's own
         # (skips the slow multi-candidate water search on big networks).
+        # Decoupled variant 1 (always): EPANET rule-based schedule + OPF.
         t0 = _time.time()
-        if fast:
-            dec_sched = epanet_default_onoff(wdn)
-        else:
+        rules_sched = epanet_default_onoff(wdn)
+        dec_rules = solve_coupled_schedule(wdn, pdn, cc, rules_sched)
+        t_rules = _time.time() - t0
+        # Decoupled variant 2 (Thorough): C-OWF optimized schedule + OPF.
+        dec_owf, t_owf = None, None
+        if not fast:
             try:
+                t0 = _time.time()
                 _, w_info = water_optimize(wdn, verbose=False)
-                dec_sched = w_info["schedule"]
+                dec_owf = solve_coupled_schedule(wdn, pdn, cc, w_info["schedule"])
+                t_owf = _time.time() - t0
             except Exception:
-                dec_sched = epanet_default_onoff(wdn)
-        dec = solve_coupled_schedule(wdn, pdn, cc, dec_sched)
-        t_dec = _time.time() - t0
+                dec_owf, t_owf = None, None
+        # primary decoupled result (drives the metric header + Decoupled tab):
+        # the water-optimized one when available, else the rules baseline.
+        dec = dec_owf if dec_owf is not None else dec_rules
+        t_dec = t_owf if t_owf is not None else t_rules
 
         # --- coupled: voltage-aware joint schedule search ----------------------
         opt_kw = dict(verbose=False, inner_iter=8 if fast else 15,
@@ -183,6 +191,9 @@ def render_coupled(st) -> None:
         val = validate_coupled(wdn, pdn, cpl, vmin=vmin, vmax=vmax)
         dec_loss = coupled_loss_kwh(pdn, dec)      # true Z-bus loss (kW·h)
         cpl_loss = coupled_loss_kwh(pdn, cpl)
+        rules_loss = (dec_loss if dec is dec_rules else coupled_loss_kwh(pdn, dec_rules))
+        owf_loss = (None if dec_owf is None else
+                    (dec_loss if dec is dec_owf else coupled_loss_kwh(pdn, dec_owf)))
         prv_fig = None
         if getattr(cpl, "prv", None) and wdn.n_valves:
             try:
@@ -199,6 +210,8 @@ def render_coupled(st) -> None:
 
     st.session_state["cpl_result"] = dict(
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
+        dec_rules=dec_rules, dec_owf=dec_owf, t_rules=t_rules, t_owf=t_owf,
+        rules_loss=rules_loss, owf_loss=owf_loss,
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
         pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss,
         prv_fig=prv_fig, t_dec=t_dec, t_cpl=t_cpl,
@@ -374,36 +387,64 @@ def _render_coupled_result(st) -> None:
     m[4].metric("Power valid. (Z-bus)", f"{val.v_err_max:.4f} pu",
                 help="Max linear-vs-nonlinear voltage error.")
 
-    # ---- cost / voltage / loss comparison table ----
-    st.markdown("##### Decoupled vs coupled")
-    def _r(name, d, c, fmt="{:.4f}"):
-        if np.isfinite(d) and np.isfinite(c) and abs(d) > 1e-12:
-            pct = 100.0 * (c - d) / abs(d)
-            pct_s = f"{'▼' if pct < 0 else '▲'} {abs(pct):.1f}%"
-        else:
-            pct_s = "—"
-        return {"metric": name, "decoupled (water-only)": fmt.format(d),
-                "coupled (C-OWPF)": fmt.format(c),
-                "Δ": fmt.format(c - d), "Δ %": pct_s}
+    # ---- cost / voltage / loss comparison: BOTH decoupled practices vs coupled -
+    st.markdown("##### Decoupled (both practices) vs coupled")
+    dRl, dOw = R.get("dec_rules"), R.get("dec_owf")
+    if dRl is None:                       # stale session from an older app version
+        dRl, dOw = dec, None
+    have_owf = dOw is not None
+
+    def _row(name, v_rules, v_owf, v_cpl, fmt="{:.4f}"):
+        def _f(v):
+            return "—" if v is None or not np.isfinite(v) else fmt.format(v)
+        def _pct(base):
+            if (base is None or not np.isfinite(base) or abs(base) < 1e-12
+                    or v_cpl is None or not np.isfinite(v_cpl)):
+                return "—"
+            p = 100.0 * (v_cpl - base) / abs(base)
+            return f"{'▼' if p < 0 else '▲'} {abs(p):.1f}%"
+        d = {"metric": name, "EPANET rules + OPF": _f(v_rules)}
+        if have_owf:
+            d["C-OWF + OPF"] = _f(v_owf)
+        d["C-OWPF (coupled)"] = _f(v_cpl)
+        d["Δ% vs rules"] = _pct(v_rules)
+        if have_owf:
+            d["Δ% vs C-OWF"] = _pct(v_owf)
+        return d
+
+    _g = lambda o, a: (None if o is None else getattr(o, a))
     cmp = pd.DataFrame([
-        _r("pump-energy cost ($)", dec.energy_cost, cpl.energy_cost),
-        _r("network-loss cost ($)", dec.loss_cost, cpl.loss_cost),
-        _r("TOTAL cost ($)", dec_total, cpl_total),
-        _r("min voltage (pu)", dec.voltage.min(), cpl.voltage.min()),
-        _r("voltage violation (pu)", dec.v_violation, cpl.v_violation),
-        _r("true loss, Z-bus (kW·h)", dec_loss, cpl_loss, "{:,.0f}"),
-        _r("water head slack (ft)", dec.water_max_slack, cpl.water_max_slack, "{:.3f}"),
-        _r("solve time (s)", R.get("t_dec", float("nan")),
-           R.get("t_cpl", float("nan")), "{:.1f}"),
+        _row("pump-energy cost ($)", dRl.energy_cost, _g(dOw, "energy_cost"),
+             cpl.energy_cost),
+        _row("network-loss cost ($)", dRl.loss_cost, _g(dOw, "loss_cost"),
+             cpl.loss_cost),
+        _row("TOTAL cost ($)", dRl.total_cost, _g(dOw, "total_cost"), cpl_total),
+        _row("min voltage (pu)", float(dRl.voltage.min()),
+             None if dOw is None else float(dOw.voltage.min()),
+             float(cpl.voltage.min())),
+        _row("voltage violation (pu)", dRl.v_violation, _g(dOw, "v_violation"),
+             cpl.v_violation),
+        _row("true loss, Z-bus (kW·h)", R.get("rules_loss"), R.get("owf_loss"),
+             cpl_loss, "{:,.0f}"),
+        _row("water head slack (ft)", dRl.water_max_slack,
+             _g(dOw, "water_max_slack"), cpl.water_max_slack, "{:.3f}"),
+        _row("solve time (s)", R.get("t_rules", R.get("t_dec")), R.get("t_owf"),
+             R.get("t_cpl"), "{:.1f}"),
     ])
     st.dataframe(cmp, use_container_width=True, hide_index=True)
+    if not have_owf:
+        st.caption("⚡ **Fast** effort compares against the rules baseline only — "
+                   "switch **Search effort → Thorough** to also compare against the "
+                   "water-optimized decoupled practice (C-OWF + OPF).")
     st.caption("Objective (paper 33d): **pump energy + priced network loss**, both at the "
-               "WDN electricity price. Decoupled optimizes the water schedule blind to the "
-               "grid then imposes its pump load; coupled co-optimizes pump timing and PV "
-               "reactive to cut loss and hold voltages — the Δ is the dollar saving. "
-               "**Solve time**: decoupled = its schedule + one fixed-schedule coupled LP; "
-               "coupled = the full voltage-aware schedule search (baseline, candidates, "
-               "trust-region MILP, polish) — the Δ% is the computational price of coupling.")
+               "WDN electricity price. Two decoupled practices are compared: **EPANET "
+               "rules + OPF** (the utility runs tank-level rules, the DSO reacts) and "
+               "**C-OWF + OPF** (the utility optimizes its schedule alone, then hands it "
+               "off). **C-OWPF** co-optimizes pump timing and PV reactive across both "
+               "systems — the Δ% columns are its saving against each practice. "
+               "**Solve time**: each decoupled column = its schedule + one fixed-schedule "
+               "coupled LP; C-OWPF = the full voltage-aware schedule search — the "
+               "computational price of coupling.")
 
     T = cpl.voltage.shape[1]
     h0 = min(12, T - 1)

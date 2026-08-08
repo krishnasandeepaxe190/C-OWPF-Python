@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as _st
 
+from owf.config import DEFAULT_SOLVER, SOLVER_CHOICES, available_solvers
 from pdn import FEEDERS, PDN, solve_pdn_opf, pump_load_to_bus
 from coupled.config import LOAD_PROFILE_24
 from .theme import POWER, section_header
@@ -41,6 +42,25 @@ def _epanet_pump_kw(net: int):
     return ppump, ids, wdn.time
 
 
+@_st.cache_data(show_spinner=False)
+def _owf_pump_kw(net: int, solver: str):
+    """C-OWF *optimized* pump electrical power for a water net.
+
+    Solves the decoupled water problem in the network's RECOMMENDED mode (the
+    same one the Water tab suggests) and returns the optimized schedule's true
+    nonlinear pump power -- the optimized decoupled hand-off.
+    """
+    from main_owf import MODE_SUGGESTION, run_case
+    mode = MODE_SUGGESTION[net][0]
+    case, wdn, result = run_case(net, mode, 1, None, plot=False, outdir="outputs",
+                                 verbose=False, solver=solver)
+    if result is None or result.flows is None:
+        raise RuntimeError(f"OWF {mode} solve failed for net {net}")
+    ppump = np.abs(np.asarray(result.ppump_true)[:, :wdn.time])
+    ids = [str(wdn.raw.link_name_id[i]) for i in wdn.raw.link_pump_index]
+    return ppump, ids, wdn.time, mode
+
+
 def render_power(st) -> None:
     section_header(st, POWER, "Distribution-network reactive-power OPF",
                    "Dispatch PV reactive setpoints on a real feeder, then verify with "
@@ -67,24 +87,74 @@ def render_power(st) -> None:
                             help="Vary the feeder base load over 24 h (else static nominal).")
     couple = lim[3].checkbox("Impose water pump load (decoupled hand-off)", False,
                              key="pwr_couple",
-                             help="Add a water network's EPANET pump power as bus load.")
+                             help="Add a water network's pump power as bus load — "
+                                  "the paper's decoupled Scenario A hand-off.")
 
-    pump_load = None
+    srow = st.columns([1, 3])
+    avail = available_solvers()
+    solver = srow[0].selectbox("Solver", SOLVER_CHOICES,
+                               index=SOLVER_CHOICES.index(DEFAULT_SOLVER),
+                               format_func=lambda s: s + ("" if s in avail
+                                                          else " (not installed)"),
+                               key="pwr_solver",
+                               help="Solves the reactive-OPF LP (and the OWF when "
+                                    "the pump-load source is the optimized schedule).")
+
     pump_buses = np.array([], int)
     horizon = 24                       # standalone feeder day; matched to pumps when coupling
+    pump_sets = {}                     # {schedule label: (Pu x T) pump kW}
+    handoff = st.session_state.get("dso_handoff")
     if couple:
         cc = st.columns([1, 2])
-        net = cc[0].selectbox("Water network", [8, 108, 3, 11, 36, 97, 126],
-                              format_func=lambda n: {8: "8-node", 108: "8-node+PRV",
-                                                     3: "3-node", 11: "Net1",
-                                                     36: "Net2", 97: "Net3",
-                                                     126: "BWSN (large)"}[n], key="pwr_net")
-        try:
-            ppump_kw, pump_ids, horizon = _epanet_pump_kw(net)
-            cc[0].caption(f"OPF horizon matched to pump schedule: **{horizon} h**")
-        except Exception as exc:
-            st.warning(f"Could not get pump load for that network: {exc}")
-            ppump_kw, pump_ids = None, []
+        src_opts = ["EPANET rules (baseline)", "C-OWF optimized"]
+        if handoff:
+            src_opts.insert(0, "📡 Transmitted from Water tab")
+        source = cc[0].radio(
+            "Pump-load source (which schedule is handed off)", src_opts,
+            key="pwr_src",
+            help="**Transmitted**: the schedule(s) the water operator published from "
+                 "the Water tab (both are solved and compared if two were sent). "
+                 "**EPANET rules**: no OWF is solved — pump power from EPANET's own "
+                 "tank-level rules (the cost baseline). **C-OWF optimized**: solves "
+                 "the decoupled water problem in the network's recommended mode "
+                 "first, then hands off the optimized schedule's pump power.")
+        ppump_kw, pump_ids = None, []
+        if source.startswith("📡"):
+            pump_sets = dict(handoff["schedules"])
+            pump_ids = handoff["pump_ids"]
+            horizon = int(handoff["horizon"])
+            ppump_kw = next(iter(pump_sets.values()))
+            cc[0].success(f"📨 Acknowledged: **{handoff['label']}** "
+                          f"({handoff['case']}) — {', '.join(pump_sets)} over "
+                          f"{horizon} h"
+                          + (". Both schedules will be solved and compared."
+                             if len(pump_sets) > 1 else "."))
+        else:
+            net = cc[0].selectbox("Water network", [8, 108, 3, 11, 36, 97, 126],
+                                  format_func=lambda n: {8: "8-node", 108: "8-node+PRV",
+                                                         3: "3-node", 11: "Net1",
+                                                         36: "Net2", 97: "Net3",
+                                                         126: "BWSN (large)"}[n],
+                                  key="pwr_net")
+            if source.endswith("optimized") and net in (97, 126):
+                cc[0].caption("⏳ optimized hand-off on Net3/BWSN solves the OWF first "
+                              "(minutes on the first run; cached afterwards).")
+            try:
+                if source.endswith("optimized"):
+                    with st.spinner("Solving the decoupled C-OWF first (cached per "
+                                    "network + solver)..."):
+                        ppump_kw, pump_ids, horizon, owf_mode = _owf_pump_kw(net, solver)
+                    cc[0].caption(f"OWF solved in **{owf_mode}** mode; OPF horizon "
+                                  f"matched to pump schedule: **{horizon} h**")
+                    pump_sets = {"C-OWF optimized": ppump_kw}
+                else:
+                    ppump_kw, pump_ids, horizon = _epanet_pump_kw(net)
+                    cc[0].caption(f"EPANET rule-based schedule (no OWF solve); OPF "
+                                  f"horizon matched: **{horizon} h**")
+                    pump_sets = {"EPANET rules": ppump_kw}
+            except Exception as exc:
+                st.warning(f"Could not get pump load for that network: {exc}")
+                ppump_kw, pump_ids = None, []
         if ppump_kw is not None:
             bus_opts = list(range(fmeta["N"]))
             bus_fmt = lambda b: f"bus {fmeta['orig_id'][b]}"
@@ -101,26 +171,39 @@ def render_power(st) -> None:
                     sel.append(int(b))
             pump_buses = np.array(sel, int)
 
-    if not st.button("⚡  Solve PDN OPF", type="primary", key="pwr_run"):
+    if not st.button("⚡  Solve PDN OPF", type="primary", key="pwr_run",
+                     disabled=solver not in avail):
         st.info("Configure the feeder and DER above, then **Solve PDN OPF**.")
         return
 
     pdn = PDN.build(feeder, pv_sizing=pv_sizing, vmin=vmin, vmax=vmax).limit_pv(pv_count)
     load_shape = LOAD_PROFILE_24 if daily else None
-    if couple and pump_buses.size:
-        pump_load = pump_load_to_bus(pdn, ppump_kw, pump_buses)
+    if not (couple and pump_buses.size and pump_sets):
+        pump_sets = {"(no pump load)": None}
 
+    # one OPF per handed-off schedule (two when the water operator sent both)
+    runs = {}
     with st.spinner(f"Solving reactive OPF on {fmeta['label']} over {horizon} h "
-                    f"+ Z-bus verification..."):
-        t0 = _time.time()
-        res = solve_pdn_opf(pdn, T=horizon, pump_load_pu=pump_load, load_shape=load_shape,
-                            vmin=vmin, vmax=vmax)
-        elapsed = _time.time() - t0
+                    f"x {len(pump_sets)} schedule(s) + Z-bus verification..."):
+        for lbl, pk in pump_sets.items():
+            pump_load = (pump_load_to_bus(pdn, pk, pump_buses)
+                         if pk is not None and pump_buses.size else None)
+            t0 = _time.time()
+            r = solve_pdn_opf(pdn, T=horizon, pump_load_pu=pump_load,
+                              load_shape=load_shape, vmin=vmin, vmax=vmax,
+                              solver=solver)
+            runs[lbl] = (r, _time.time() - t0)
+
+    primary = ("C-OWF optimized" if "C-OWF optimized" in runs else list(runs)[-1])
+    res, elapsed = runs[primary]
+    compare = ({lbl: (r, t) for lbl, (r, t) in runs.items()}
+               if len(runs) > 1 else None)
 
     prev = st.session_state.get("pwr_result") or {}
     st.session_state["pwr_result"] = dict(res=res, feeder=feeder, fmeta=fmeta,
                                           pump_buses=pump_buses, vmin=vmin, vmax=vmax,
-                                          elapsed=elapsed,
+                                          elapsed=elapsed, compare=compare,
+                                          primary=primary,
                                           prev_elapsed=prev.get("elapsed"),
                                           pv_rating=pdn.pv_rating[pdn.pv_buses].copy())
     _render_power_result(st)
@@ -149,6 +232,36 @@ def _render_power_result(st) -> None:
     m5.metric("Solve time", f"{el:.1f} s" if el is not None else "—", delta=dt,
               delta_color="inverse",
               help="OPF + Z-bus verification wall-clock; Δ% vs the previous Power run.")
+
+    # ---- both transmitted schedules: rules+OPF vs optimized+OPF ---------------
+    cmp_runs = R.get("compare")
+    if cmp_runs:
+        st.markdown("##### Decoupled hand-off comparison — one OPF per schedule")
+        labels = list(cmp_runs)
+        (rA, tA), (rB, tB) = cmp_runs[labels[0]], cmp_runs[labels[1]]
+
+        def _row(name, a, b, fmt="{:.4f}"):
+            pct = ("—" if not (np.isfinite(a) and np.isfinite(b)) or abs(a) < 1e-12
+                   else f"{'▼' if b < a else '▲'} {abs(100.0 * (b - a) / abs(a)):.1f}%")
+            return {"metric": name, labels[0]: fmt.format(a), labels[1]: fmt.format(b),
+                    "Δ %": pct}
+        cdf = pd.DataFrame([
+            _row("true Vmin, Z-bus (pu)", float(np.nanmin(rA.v_nl)),
+                 float(np.nanmin(rB.v_nl))),
+            _row("voltage violation (pu)", rA.v_violation, rB.v_violation),
+            _row("daily loss, optimized VAr (kW·h)", float(rA.loss_kw.sum()),
+                 float(rB.loss_kw.sum()), "{:,.1f}"),
+            _row("daily loss, no VAr (kW·h)", float(rA.loss_base_kw.sum()),
+                 float(rB.loss_base_kw.sum()), "{:,.1f}"),
+            _row("solve time (s)", tA, tB, "{:.1f}"),
+        ])
+        st.dataframe(cdf, use_container_width=True, hide_index=True)
+        st.caption(f"Same feeder and DER, different transmitted pump schedules. The "
+                   f"detailed panels below show the **{R.get('primary', labels[-1])}** "
+                   f"case. An optimized water schedule usually pumps off-peak, which "
+                   f"also means lighter feeder load in the loss-heavy hours — the Δ% "
+                   f"columns quantify what the DSO gains from the water side's "
+                   f"optimization.")
 
     T = res.v_nl.shape[1]
     h0 = min(12, T - 1)
