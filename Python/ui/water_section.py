@@ -224,8 +224,14 @@ def _render_constraints(st, rec) -> None:
                 "tighten as the algorithm relinearizes.")
     st.plotly_chart(evolution_figure(wdn, iterates), use_container_width=True,
                     key=f"cons_ev_{rec['id']}")
-    k = st.slider("Iteration", 0, len(iterates) - 1, len(iterates) - 1,
-                  key=f"cons_k_{rec['id']}")
+    # st.slider requires min < max: a run that converges in ONE iteration has
+    # nothing to slide over
+    if len(iterates) > 1:
+        k = st.slider("Iteration", 0, len(iterates) - 1, len(iterates) - 1,
+                      key=f"cons_k_{rec['id']}")
+    else:
+        k = 0
+        st.caption("Converged in a single iteration — showing it.")
     snap = iterates[k]
     st.caption(f"Iteration {k}: objective = {snap['obj']:.5f}, "
                f"iterate change ‖Δ[H;Q;z]‖ = {snap['err']:.4f}"
