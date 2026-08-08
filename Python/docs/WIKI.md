@@ -67,8 +67,21 @@ the full trust-region MILP could be re-enabled on large nets (untested).
   `getLinkInitialSetting()` gives a PRV's pressure setpoint (psi).
 - epyt leaves `*_temp.txt` / `.rpt` / `.bin` files it can't always delete
   (WinError 32) — harmless; they're gitignored.
+- epyt occasionally fails a run outright with `[Errno 2] No such file or
+  directory: '@#XXXXXXXX.bin'` (its randomly-named scratch file) — transient;
+  rerun the case. If persistent, clear stray `@#*` files from the CWD.
 - Repeated multi-minute solves in one bash session can hit cygwin fork errors —
   run long jobs via background tasks.
+
+### AppTest (Streamlit test harness) gotchas
+- `at.session_state.get("key")` does NOT exist on the session-state proxy — it
+  raises `AttributeError: get not found`. Use `"key" in at.session_state` then
+  index. (A crashed *probe* is easy to misread as a crashed *app*.)
+- Printing widget values that contain emoji (📡 etc.) from a verification
+  script crashes on Windows' cp1252 console — run probes with
+  `PYTHONIOENCODING=utf-8`.
+- Drive REAL runs (set widgets, click, re-run, inspect session state); an
+  app-loads-clean smoke test misses every render-with-results bug.
 
 ### Windows / OneDrive / LaTeX
 - OneDrive **online-only placeholder files** read as *Permission denied* /
@@ -126,6 +139,19 @@ a user-raised h_set is visibly "paying for pressure", not solver failure.
   base and causes reverse-flow overvoltage (1.29 pu).
 
 ---
+
+## 3b. Feature map for the institutional workflow (added 2026-08-07 evening)
+
+- **Water → DSO transmit:** Water tab publishes pump schedules (EPANET rules /
+  C-OWF optimized / both) into `st.session_state["dso_handoff"]`; the Power tab
+  acknowledges, pre-selects the transmitted source, and solves ONE OPF PER
+  schedule, comparing them (Vmin, violation, loss, time, Δ%).
+- **Coupled three-way comparison:** `dec_rules` (always) and `dec_owf`
+  (Thorough) are both solved and tabled against C-OWPF with Δ% per practice —
+  the coupling's value vs *both* real decoupled workflows.
+- **Doc rule (standing):** every commit batch ends by updating README, the
+  codebase PDF (`ast_extract.py` + `codebase_summary.tex` recompile), and this
+  wiki.
 
 ## 4. Verification checklist (what "done" means here)
 

@@ -151,16 +151,23 @@ Five tabs, plus a **System / Light / Dark** appearance toggle:
 - **💧 Water** — the decoupled OWF: pick a network + mode (`direct` / `warmstart` /
   `optimize` / `epanet`) + price; interactive network map, flow animation, schedule,
   flows/heads/convergence/error plots, EPANET rules, per-case CSVs and a session
-  comparison table.
+  comparison table. A **📡 Transmit-to-DSO** panel publishes the pump schedules
+  (EPANET rule-based, C-OWF optimized, or both) to the Power tab — the
+  water-utility → DSO hand-off, live.
 - **⚡ Power** — the standalone reactive OPF on any feeder. DER controls: **PV
-  sizing** (Spv = k·Ppv,max), **# active PV sites**, voltage limits, optional water
-  **pump-load hand-off** (pump→bus connection). Outputs: feeder voltage map, voltage
-  profile (linear vs Z-bus), voltage heatmap, PV reactive dispatch, and **true loss**
-  (with vs without VAr support), plus a setpoints CSV.
-- **🔗 Coupled** — joint C-OWPF vs the decoupled hand-off, **cost/voltage/loss
-  compared**. Controls: water net, feeder, pump→bus, PV sizing/count, voltage limits,
-  and a **Fast / Thorough** search-effort switch (Fast is recommended for Net3 /
-  SB-128). Validates against EPANET (water) and Z-bus (power).
+  sizing** (Spv = k·Ppv,max), **# active PV sites**, voltage limits, solver choice,
+  and the water **pump-load hand-off**: transmitted schedules from the Water tab
+  (acknowledged with a banner; **both schedules are solved separately and their
+  OPF results compared** when two arrive), or pick EPANET rules / C-OWF optimized
+  directly. Outputs: feeder voltage map, voltage profile (linear vs Z-bus),
+  voltage heatmap, PV reactive dispatch + **capacity utilization**, and **true
+  loss** (with vs without VAr support), plus a setpoints CSV.
+- **🔗 Coupled** — joint C-OWPF against **both decoupled practices**: EPANET rules
+  + OPF (always) and C-OWF + OPF (Thorough effort), with Δ% savings vs each.
+  Controls: water net, feeder, pump→bus, PV sizing/count, voltage limits, VSP/PRV,
+  solver choice, and a **Fast / Thorough** search-effort switch (Fast is
+  recommended for Net3 / SB-128). Coupling map, decoupled-solution tables, and
+  validation against EPANET (water) and Z-bus (power).
 - **📖 Guide** — the full methodology, including the power and coupled sections.
 
 ## Network status
