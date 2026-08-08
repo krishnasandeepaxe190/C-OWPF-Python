@@ -160,7 +160,8 @@ def render_coupled(st) -> None:
         # Decoupled variant 1 (always): EPANET rule-based schedule + OPF.
         t0 = _time.time()
         rules_sched = epanet_default_onoff(wdn)
-        dec_rules = solve_coupled_schedule(wdn, pdn, cc, rules_sched)
+        dec_rules = solve_coupled_schedule(wdn, pdn, cc, rules_sched,
+                                           replay_polish=True)
         t_rules = _time.time() - t0
         # Decoupled variant 2 (Thorough): C-OWF optimized schedule + OPF.
         dec_owf, t_owf = None, None
@@ -168,7 +169,8 @@ def render_coupled(st) -> None:
             try:
                 t0 = _time.time()
                 _, w_info = water_optimize(wdn, verbose=False)
-                dec_owf = solve_coupled_schedule(wdn, pdn, cc, w_info["schedule"])
+                dec_owf = solve_coupled_schedule(wdn, pdn, cc, w_info["schedule"],
+                                                 replay_polish=True)
                 t_owf = _time.time() - t0
             except Exception:
                 dec_owf, t_owf = None, None
@@ -239,11 +241,28 @@ def render_coupled(st) -> None:
             except Exception:
                 prv_fig = None
 
+        # water-side plot suite: the SAME figures the Water tab shows (schedule
+        # vs price with VSP speeds, flows/heads vs the EPANET replay, convergence,
+        # error summary) rendered on the coupled solution, plus the solution-
+        # colored network map for the map/animation tabs -- keeps the two tabs'
+        # plots consistent.
+        water_plots, water_md_sol = [], None
+        try:
+            from owf.plots import plot_all
+            from owf.netmap import extract_map_data as _emd
+            water_plots = [str(p) for p in plot_all(
+                wdn, cpl, val.water, outdir="outputs",
+                prefix=f"coupled_{wdn.spec.name}")]
+            water_md_sol = _emd(wdn, cpl)
+        except Exception:
+            water_plots, water_md_sol = [], None
+
     st.session_state["cpl_result"] = dict(
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
         dec_rules=dec_rules, dec_owf=dec_owf, t_rules=t_rules, t_owf=t_owf,
         rules_loss=rules_loss, owf_loss=owf_loss,
         solver_log=cap["text"][-400_000:], signals=sig,
+        water_plots=water_plots, water_md_sol=water_md_sol,
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
         pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss,
         prv_fig=prv_fig, t_dec=t_dec, t_cpl=t_cpl,
@@ -288,6 +307,10 @@ def _render_solution_tables(st, res, R, prefix: str, title: str) -> None:
         st.dataframe(pd.DataFrame(np.round(res.ppump_true[:, :T], 2),
                                   index=pump_ids, columns=hours),
                      use_container_width=True)
+    if getattr(res, "ppump_linear", None) is not None:
+        from .pump_power import pump_power_check
+        pump_power_check(st, res.ppump_linear, res.ppump_true, pump_ids,
+                         key=f"{prefix}_pp", label=f"{title} — pump power check")
     with st.expander(f"Flows (GPM) — {len(link_ids)} links × {T} h"):
         st.dataframe(pd.DataFrame(np.round(res.flows[:, :T], 1),
                                   index=link_ids, columns=hours),
@@ -478,13 +501,24 @@ def _render_coupled_result(st) -> None:
                "coupled LP; C-OWPF = the full voltage-aware schedule search — the "
                "computational price of coupling.")
 
+    # optimized (linearized) vs true pump power of the coupled solution
+    if (getattr(cpl, "ppump_linear", None) is not None
+            and getattr(cpl, "ppump_true", None) is not None):
+        from .pump_power import pump_power_check
+        pump_power_check(st, cpl.ppump_linear, cpl.ppump_true,
+                         R.get("pump_ids"), key="cpl_pp",
+                         label="C-OWPF pump power check")
+
     T = cpl.voltage.shape[1]
     h0 = min(12, T - 1)
     tab_names = ["🔗 Coupling map", "Feeder map", "Voltage profile", "Pump schedule",
                  "PV reactive", "Search trace", "Decoupled solution", "🔎 Inspector",
-                 "🖥 Solver log", "🧬 Correlations"]
+                 "🖥 Solver log", "🧬 Correlations",
+                 # water-side plot suite -- same figures as the Water tab
+                 "💧 Water map", "Flow animation", "Flows", "Heads",
+                 "Convergence", "Error"]
     if R.get("prv_fig") is not None:
-        tab_names.append("PRV")
+        tab_names.append("PRV")           # conditional tab stays LAST (tabs[-1])
     tabs = st.tabs(tab_names)
     with tabs[0]:
         if R.get("water_md") is not None:
@@ -546,6 +580,36 @@ def _render_coupled_result(st) -> None:
     with tabs[8]:
         from .correlations import render_correlations
         render_correlations(st, R.get("signals") or {}, "cpl")
+    # --- water-side plot suite (consistent with the Water tab) -----------------
+    from pathlib import Path as _Path
+    from owf.netmap import build_map_figure, build_animated_map_figure
+    wp = {_Path(p).stem.split("_")[-1]: p for p in (R.get("water_plots") or [])}
+    wmd = R.get("water_md_sol")
+    with tabs[9]:
+        if wmd and "flows" in wmd:
+            hr = st.slider("Hour", 0, wmd["time"] - 1, 0, key="cpl_wmap_hr")
+            st.plotly_chart(build_map_figure(wmd, hr), use_container_width=True,
+                            key="cpl_wmap")
+            st.caption("Water network under the **coupled** solution — same map as "
+                       "the Water tab: link width/arrows = flow, node color = pressure.")
+        else:
+            st.info("Re-run the case to build the water map.")
+    with tabs[10]:
+        if wmd and "flows" in wmd:
+            st.caption("▶ Play to animate. Arrow direction = flow direction, "
+                       "size = |flow|, node color = pressure.")
+            st.plotly_chart(build_animated_map_figure(wmd), use_container_width=True,
+                            key="cpl_wanim")
+        else:
+            st.info("No solution to animate.")
+    for _ti, _kind in ((11, "flows"), (12, "heads"), (13, "convergence"),
+                       (14, "error")):
+        with tabs[_ti]:
+            _p = wp.get(_kind)
+            if _p and _Path(_p).exists():
+                st.image(str(_p), use_container_width=True)
+            else:
+                st.info("plot not available — re-run the case")
     if R.get("prv_fig") is not None:
         with tabs[-1]:
             st.plotly_chart(R["prv_fig"], use_container_width=True, key="cpl_prv_fig")
@@ -568,6 +632,10 @@ def _render_coupled_result(st) -> None:
                                           fmeta["orig_id"]),
                         use_container_width=True, key="cpl_prof")
     with tabs[2]:
+        # same schedule-vs-price figure as the Water tab (VSP bars show omega)
+        _ps = wp.get("schedule")
+        if _ps and _Path(_ps).exists():
+            st.image(str(_ps), use_container_width=True)
         sched = np.round(cpl.onoff)
         pump_labels = [f"pump {i}" for i in range(sched.shape[0])]
         if getattr(cpl, "speed", None) is not None:

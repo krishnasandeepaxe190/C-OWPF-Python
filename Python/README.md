@@ -151,15 +151,21 @@ Five tabs, plus a **System / Light / Dark** appearance toggle:
 - **💧 Water** — the decoupled OWF: pick a network + mode (`direct` / `warmstart` /
   `optimize` / `epanet`) + price; interactive network map, flow animation, schedule,
   flows/heads/convergence/error plots, EPANET rules, per-case CSVs and a session
-  comparison table. A **📡 Transmit-to-DSO** panel publishes the pump schedules
-  (EPANET rule-based, C-OWF optimized, or both) to the Power tab — the
-  water-utility → DSO hand-off, live.
+  comparison table. A **⚡ pump-power check** compares the optimizer's Σ
+  *linearized* power against the Σ *true* nonlinear power at the solution
+  (total + per-pump Δ% — the linearization-honesty evidence). A **📡
+  Transmit-to-DSO** panel publishes the pump schedules (EPANET rule-based,
+  C-OWF optimized, or both, with their linearized counterparts) to the Power
+  tab — the water-utility → DSO hand-off, live.
 - **⚡ Power** — the standalone reactive OPF on any feeder. DER controls: **PV
   sizing** (Spv = k·Ppv,max), **# active PV sites**, voltage limits, solver choice,
   and the water **pump-load hand-off**: transmitted schedules from the Water tab
   (acknowledged with a banner; **both schedules are solved separately and their
   OPF results compared** when two arrive), or pick EPANET rules / C-OWF optimized
-  directly. Outputs: feeder voltage map, voltage profile (linear vs Z-bus),
+  directly. A **pump-load table** reports the Σ true kWh each schedule imposes
+  on the feeder, plus the water LP's linearized Σ and Δ% where the schedule
+  came from an optimization. Outputs: feeder voltage map, voltage profile
+  (linear vs Z-bus),
   voltage heatmap, PV reactive dispatch + **capacity utilization**, **true
   loss** (with vs without VAr support), a setpoints CSV, the full **solver log**
   (fd-level capture: HiGHS/MOSEK presolve + primal-dual iterations), and a
@@ -173,7 +179,13 @@ Five tabs, plus a **System / Light / Dark** appearance toggle:
   full pipeline **solver log** (every search candidate + primal-dual output), a
   **🧬 correlation explorer** (price / demand / pump kW / PV / voltage / loss /
   tank heads co-evolving, with Pearson matrix and pair scatter), and validation
-  against EPANET (water) and Z-bus (power).
+  against EPANET (water) and Z-bus (power). The **water-side plot suite is the
+  same as the Water tab's** (💧 water map + hour slider, flow animation,
+  schedule-vs-price with VSP speeds, flows/heads vs the EPANET replay,
+  convergence, error summary), plus the same ⚡ pump-power check — VSP coupled
+  results finish with the **speed-pinned EPANET replay polish**, so the
+  reported max |dHead| is the replayed one (~0.005 ft on the tutorials, not a
+  relaxation artifact).
 - **📖 Guide** — the full methodology, including the power and coupled sections.
 
 ## Network status

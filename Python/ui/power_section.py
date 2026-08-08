@@ -57,8 +57,10 @@ def _owf_pump_kw(net: int, solver: str):
     if result is None or result.flows is None:
         raise RuntimeError(f"OWF {mode} solve failed for net {net}")
     ppump = np.abs(np.asarray(result.ppump_true)[:, :wdn.time])
+    ppump_lin = (np.abs(np.asarray(result.ppump_linear)[:, :wdn.time])
+                 if getattr(result, "ppump_linear", None) is not None else None)
     ids = [str(wdn.raw.link_name_id[i]) for i in wdn.raw.link_pump_index]
-    return ppump, ids, wdn.time, mode
+    return ppump, ids, wdn.time, mode, ppump_lin
 
 
 def render_power(st) -> None:
@@ -103,6 +105,7 @@ def render_power(st) -> None:
     pump_buses = np.array([], int)
     horizon = 24                       # standalone feeder day; matched to pumps when coupling
     pump_sets = {}                     # {schedule label: (Pu x T) pump kW}
+    pump_lin_sets = {}                 # {schedule label: linearized pump kW} where known
     handoff = st.session_state.get("dso_handoff")
     if couple:
         cc = st.columns([1, 2])
@@ -119,8 +122,10 @@ def render_power(st) -> None:
                  "the decoupled water problem in the network's recommended mode "
                  "first, then hands off the optimized schedule's pump power.")
         ppump_kw, pump_ids = None, []
+        pump_lin_sets = {}                 # {label: linearized pump kW} where known
         if source.startswith("📡"):
             pump_sets = dict(handoff["schedules"])
+            pump_lin_sets = dict(handoff.get("schedules_linear") or {})
             pump_ids = handoff["pump_ids"]
             horizon = int(handoff["horizon"])
             ppump_kw = next(iter(pump_sets.values()))
@@ -143,10 +148,13 @@ def render_power(st) -> None:
                 if source.endswith("optimized"):
                     with st.spinner("Solving the decoupled C-OWF first (cached per "
                                     "network + solver)..."):
-                        ppump_kw, pump_ids, horizon, owf_mode = _owf_pump_kw(net, solver)
+                        (ppump_kw, pump_ids, horizon, owf_mode,
+                         ppump_lin) = _owf_pump_kw(net, solver)
                     cc[0].caption(f"OWF solved in **{owf_mode}** mode; OPF horizon "
                                   f"matched to pump schedule: **{horizon} h**")
                     pump_sets = {"C-OWF optimized": ppump_kw}
+                    if ppump_lin is not None:
+                        pump_lin_sets = {"C-OWF optimized": ppump_lin}
                 else:
                     ppump_kw, pump_ids, horizon = _epanet_pump_kw(net)
                     cc[0].caption(f"EPANET rule-based schedule (no OWF solve); OPF "
@@ -219,12 +227,36 @@ def render_power(st) -> None:
     sig["loss, optimized VAr (kW)"] = np.asarray(res.loss_kw)[:horizon]
     sig["loss, no VAr (kW)"] = np.asarray(res.loss_base_kw)[:horizon]
 
+    # pump load imposed on the feeder: Σ true kWh per schedule, plus the water
+    # optimizer's linearized total where the schedule came from an LP solve
+    pump_cmp = []
+    for lbl, pk in pump_sets.items():
+        if pk is None:
+            continue
+        tt = float(np.abs(np.asarray(pk)).sum())
+        pl = pump_lin_sets.get(lbl)
+        tl = float(np.abs(np.asarray(pl)).sum()) if pl is not None else None
+        # keep every column present and type-stable (str) -- a row with missing
+        # keys makes pandas emit a mixed object column that pyarrow rejects
+        pump_cmp.append({
+            "schedule": lbl,
+            "Σ pump load, true (kWh)": f"{tt:,.1f}",
+            "Σ optimizer (linearized) (kWh)": "—" if tl is None else f"{tl:,.1f}",
+            "Δ %": ("—" if tl is None or tt <= 1e-12
+                    else f"{100.0 * (tl - tt) / tt:+.3f}%"),
+        })
+
     prev = st.session_state.get("pwr_result") or {}
     st.session_state["pwr_result"] = dict(res=res, feeder=feeder, fmeta=fmeta,
                                           pump_buses=pump_buses, vmin=vmin, vmax=vmax,
                                           elapsed=elapsed, compare=compare,
                                           primary=primary, solver_log=solver_log,
                                           signals=sig,
+                                          pump_cmp=pump_cmp,
+                                          pump_lin_sets=pump_lin_sets,
+                                          pump_sets={k: v for k, v in pump_sets.items()
+                                                     if v is not None},
+                                          pump_ids_store=list(pump_ids) if couple else [],
                                           prev_elapsed=prev.get("elapsed"),
                                           pv_rating=pdn.pv_rating[pdn.pv_buses].copy())
     _render_power_result(st)
@@ -253,6 +285,23 @@ def _render_power_result(st) -> None:
     m5.metric("Solve time", f"{el:.1f} s" if el is not None else "—", delta=dt,
               delta_color="inverse",
               help="OPF + Z-bus verification wall-clock; Δ% vs the previous Power run.")
+
+    # ---- pump load imposed on the feeder: true kWh per schedule + fidelity ----
+    if R.get("pump_cmp"):
+        st.markdown("##### Pump load imposed on the feeder (Σ over the horizon)")
+        st.dataframe(pd.DataFrame(R["pump_cmp"]), use_container_width=True,
+                     hide_index=True)
+        st.caption("**true** = the nonlinear pump power handed off by the water side "
+                   "(what the OPF imposes as bus load). Where the schedule came from "
+                   "an LP solve, **optimizer (linearized)** is the water LP's own "
+                   "power variable — the Δ% is the linearization-fidelity gap.")
+        from .pump_power import pump_power_check
+        for lbl, pl in (R.get("pump_lin_sets") or {}).items():
+            pk = (R.get("pump_sets") or {}).get(lbl)
+            if pk is not None:
+                pump_power_check(st, pl, pk, R.get("pump_ids_store"),
+                                 key=f"pwr_pp_{lbl}",
+                                 label=f"{lbl} — per-pump power check")
 
     # ---- both transmitted schedules: rules+OPF vs optimized+OPF ---------------
     cmp_runs = R.get("compare")

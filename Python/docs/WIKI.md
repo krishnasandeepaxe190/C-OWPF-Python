@@ -72,6 +72,14 @@ the full trust-region MILP could be re-enabled on large nets (untested).
   rerun the case. If persistent, clear stray `@#*` files from the CWD.
 - Repeated multi-minute solves in one bash session can hit cygwin fork errors —
   run long jobs via background tasks.
+- **Parallel solve sweeps can exhaust Windows commit memory and freeze the PC.**
+  8 concurrent Python solver processes (cvxpy + scipy + EPANET each) blew the
+  paging file: `ImportError: DLL load failed ... The paging file is too small`,
+  `uv_spawn` failures, and a plotly `MemoryError` in an unrelated process.
+  Throttle batch validation to ~2 concurrent solves on this machine, run
+  BWSN/Net3-class cases alone, and never run an AppTest probe concurrently
+  with a sweep. Also: two concurrent solves must never share the same .inp
+  (epyt writes `*_temp` scratch files next to it).
 
 ### AppTest (Streamlit test harness) gotchas
 - `at.session_state.get("key")` does NOT exist on the session-state proxy — it
@@ -138,10 +146,36 @@ EPANET replay; cheapest schedule with replay error <= 5 ft wins.
    `WW = omega*f` is exact), reconverge from the replay point, keep the best-
    replaying candidate. 16.5 → 0.01 ft.
 
+### Coupled VSP had the SAME replay disease — the polish must live in BOTH paths
+3-node + IEEE-13, VSP, coupled: max |dHead| = **27.8 ft**, pump-flow error
+**808 GPM** (user: "why is the head diff very high?"). Same root cause as the
+decoupled 16.5-ft case: the damped homotopy stops at a point where the
+McCormick relaxation gap leaves the model's pump flow far from what EPANET's
+affinity-scaled curve delivers at the solved speeds — and the coupled path
+(`solve_coupled_schedule` / `optimize_coupled_schedule`) never replayed or
+re-pinned. Fix: `_replay_polish` in `coupled/runner.py` — replay (schedule,
+speeds) in EPANET, re-converge the **coupled** problem with `fixed_schedule`
+AND `fixed_speed` (omega pinned makes `WW = omega*f` exact) linearized at the
+replay point, keep the best-replaying candidate (monotone). Wired into the
+final clean convergence of `optimize_coupled_schedule` and the UI's
+`dec_rules`/`dec_owf` solves (`replay_polish=True`). Result: 27.8 → **0.005 ft**,
+808 → **0.005 GPM**, same schedule and speeds — only replay-consistent now.
+**Lesson: every solve path that produces a VSP result must END with the
+speed-pinned EPANET replay polish. A fix applied to one path (decoupled) does
+not protect its siblings (coupled).**
+
 ### PRV: what worked immediately
 The two-binary three-state MILP (x_act/x_open, big-M, h_set = downstream
 elevation + psi*2.30724939) validated at 0.15 ft on the first correct build.
 PRV binaries are exact — do NOT relinearize them; only pumps/pipes relinearize.
+**Known marginal-state gap (documented, not a bug):** on the coupled FSP+PRV
+8-node case the optimized schedule replays at ~1.5 ft — localized to the PRV's
+downstream zone in the hours where upstream pressure sits exactly at the
+setpoint margin: the model picks "open" (R_prv = 0) while EPANET still
+throttles ~1.5 ft. Flows agree to 0.004 GPM, the diff is bounded by the
+pressure margin in those hours, and it is within feas_tol (2 ft). The replay
+polish cannot close it (nothing to relinearize — the flows already match);
+closing it would need EPANET-state-pinned valve binaries.
 The PRV panel overlays EPANET's **rule-based** regulation so a cost increase at
 a user-raised h_set is visibly "paying for pressure", not solver failure.
 
@@ -174,6 +208,24 @@ a user-raised h_set is visibly "paying for pressure", not solver failure.
   min Z-bus voltage, grid import, loss, tank heads, PRV head loss). Three
   views in `ui/correlations.py`: playable normalized overlay, Pearson matrix,
   user-drawn pair scatter with trend + r.
+- **Pump-power fidelity check (all three tabs):** `ui/pump_power.py`
+  (`pump_power_check`) compares Σ_t of the LP's *linearized* pump power P-hat
+  against Σ_t of the *true* nonlinear power at the solved point, total and
+  per-pump with Δ%. `CoupledResult` gained `ppump_linear` (snapshot of
+  `wmodel.Ppump.value`); the Water record stores it per run; the DSO hand-off
+  carries `schedules_linear` so the Power tab can show the gap on transmitted
+  optimized schedules. A near-zero Δ% is the linearization-honesty evidence
+  (3-node coupled VSP: 2339.130 vs 2339.131 kWh).
+- **Plot consistency (user feedback, 2026-08-08):** *"the same plots [as the
+  Water tab] are not there in the coupled tab; maintain plots consistent."*
+  The Coupled tab now renders the SAME water-side figure suite via
+  `owf.plots.plot_all` on the `CoupledResult` (works because the plot functions
+  only touch `errors/objectives/onoff/speed/flows/heads` + the EPANET-replay
+  report): 💧 Water map (+hour slider), Flow animation, Flows, Heads,
+  Convergence, Error tabs, and the schedule-vs-price figure above the schedule
+  table. **Standing rule: when a visualization is added to one tab, mirror it
+  in the sibling tab if the same data exists there.** New conditional tabs
+  still go LAST (`tabs[-1]` must remain the PRV tab when present).
 - **Doc rule (standing):** every commit batch ends by updating README, the
   codebase PDF (`ast_extract.py` + `codebase_summary.tex` recompile), and this
   wiki.

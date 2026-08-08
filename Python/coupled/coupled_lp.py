@@ -71,6 +71,7 @@ class CoupledResult:
     total_cost: float = float("nan") # energy_cost + loss_cost ($)
     speed: np.ndarray = None         # (Pu x T) VSP relative speed (None if all FSP)
     prv: dict = None                 # PRV decisions x_act/x_open/R_prv (if any)
+    ppump_linear: np.ndarray = None  # (Pu x T) model (linearized) pump power (kW)
     errors: list = field(default_factory=list)
     objectives: list = field(default_factory=list)
 
@@ -340,7 +341,7 @@ def solve_coupled(wdn: WDN, pdn: PDN, cc: CoupledConfig,
         v_min=float(v.min()), v_violation=v_violation,
         loss_kw=snap["loss_kw"], loss_cost=snap["loss_cost"],
         total_cost=snap["total_cost"], speed=snap.get("speed"),
-        prv=snap.get("prv"),
+        prv=snap.get("prv"), ppump_linear=snap.get("ppump_linear"),
         errors=errors, objectives=objectives,
     )
 
@@ -390,6 +391,7 @@ def _snapshot(wmodel, wdn, pdn, cc, ctx) -> dict:
     return dict(
         flows=flows, heads=heads, onoff=onoff, speed=speed,
         prv=_prv_snapshot(wmodel),
+        ppump_linear=np.asarray(wmodel.Ppump.value),
         ppump_true=_true_pump_power(wdn, flows, speed),
         water_max_slack=_max_slack(wmodel) if wdn.config.soft_bounds else 0.0,
         voltage=voltage, v2=v2, pv_p=pv_p, pv_q=pv_q, pv_buses=np.asarray(ctx["pv"]),

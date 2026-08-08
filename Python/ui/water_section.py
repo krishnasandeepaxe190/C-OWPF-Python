@@ -243,6 +243,11 @@ def _render_case(st, rec) -> None:
     c5.metric("Solve time", f"{case.elapsed:.0f} s", help=f"{case.n_iter} iters · {case.solver}")
     if case.note:
         st.caption(f"note: {case.note}")
+    # optimized (linearized) vs true pump power, summed over the horizon
+    if rec.get("ppump_linear") is not None and rec.get("ppump_true") is not None:
+        from .pump_power import pump_power_check
+        pump_power_check(st, rec["ppump_linear"], rec["ppump_true"],
+                         rec.get("pump_link_ids"), key=f"w_pp_{rec['id']}")
 
     has_prv = rec.get("prv_fig") is not None
     has_teach = rec.get("iterates") and rec.get("teach_wdn") is not None
@@ -492,6 +497,12 @@ def render_water(st) -> None:
                 "ppump_true": (np.abs(np.asarray(result.ppump_true)[:, :wdn.time])
                                if result is not None and result.flows is not None
                                else None),
+                # the LP's linearized pump power at the solution -- for the
+                # optimized-vs-true fidelity check panel
+                "ppump_linear": (np.abs(np.asarray(result.ppump_linear)[:, :wdn.time])
+                                 if result is not None and result.flows is not None
+                                 and getattr(result, "ppump_linear", None) is not None
+                                 else None),
                 "exports": (_build_exports(case, wdn, result)
                             if result is not None and result.flows is not None else {}),
             })
@@ -525,10 +536,17 @@ def render_water(st) -> None:
                     schedules["EPANET rules"] = pk[:, :latest["horizon"]]
                 if any(c.startswith("C-OWF") for c in chosen):
                     schedules["C-OWF optimized"] = latest["ppump_true"]
+                # the optimizer's linearized power (only exists for the LP-derived
+                # schedule) rides along so the Power tab can show the fidelity gap
+                schedules_linear = {}
+                if ("C-OWF optimized" in schedules
+                        and latest.get("ppump_linear") is not None):
+                    schedules_linear["C-OWF optimized"] = latest["ppump_linear"]
                 st.session_state["dso_handoff"] = dict(
                     net=latest["net"], label=NETWORKS[latest["net"]].name,
                     horizon=latest["horizon"], pump_ids=latest["pump_link_ids"],
-                    schedules=schedules, case=latest["case"].label)
+                    schedules=schedules, schedules_linear=schedules_linear,
+                    case=latest["case"].label)
                 st.success(f"Transmitted **{len(schedules)} schedule(s)** to the DSO "
                            f"— open **⚡ Power**, tick *Impose water pump load*, and "
                            f"the transmitted source is pre-selected.")

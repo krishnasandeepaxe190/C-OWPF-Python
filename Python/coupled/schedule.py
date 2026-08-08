@@ -161,10 +161,13 @@ def optimize_coupled_schedule(wdn, pdn, cc, v_tol: float = 0.02,
     # can win on an under-converged score yet be worse once fully solved. Re-solve
     # BOTH the winner and the EPANET baseline cleanly and keep the genuinely best,
     # which guarantees the coupled result is never worse than the decoupled one.
+    # replay_polish: on VSP networks, finish each final with the EPANET
+    # speed-pinned polish so the returned result replays at the solved speeds.
     finals = []
     for sched in (best_sched, base_sched):
         f = solve_coupled_schedule(wdn, pdn, cc, sched, soft_bounds=True,
-                                   max_iter=max(inner_iter, 25))
+                                   max_iter=max(inner_iter, 25),
+                                   replay_polish=True)
         if f.flows is not None and f.flows.size:
             fkey, fcost, fv = _score(wdn, f, feas_tol, v_tol)
             finals.append((fkey, fcost, fv, f, _apply_availability(wdn, np.round(sched))))
