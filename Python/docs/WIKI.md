@@ -82,6 +82,13 @@ the full trust-region MILP could be re-enabled on large nets (untested).
   `PYTHONIOENCODING=utf-8`.
 - Drive REAL runs (set widgets, click, re-run, inspect session state); an
   app-loads-clean smoke test misses every render-with-results bug.
+- **AppTest cannot catch console-state bugs.** A served app's `sys.stdout` can
+  be closed/detached (run_ui.bat windows, cp1252 consoles) — a bare `print`
+  in a tab then CRASHES the page, while AppTest's healthy console passes.
+  `capture_fds` therefore rebinds `sys.stdout/stderr` to fresh UTF-8 writers
+  over the captured fds for the duration of the block (restored after), so any
+  print — ours or a library's — is safe and lands in the log. Never `print`
+  in UI code outside a capture block; use `st.*` elements instead.
 
 ### Windows / OneDrive / LaTeX
 - OneDrive **online-only placeholder files** read as *Permission denied* /
