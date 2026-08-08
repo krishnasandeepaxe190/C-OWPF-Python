@@ -43,6 +43,31 @@ def _epanet_pump_kw(net: int):
 
 
 @_st.cache_data(show_spinner=False)
+def _pwl_pump_kw(net: int, K: int):
+    """Pump power of the PWL-MILP benchmark schedule (Oikonomou-Parvania 2019).
+
+    Solves the one-shot PWL MILP (120 s budget), replays its schedule in
+    EPANET, and returns the TRUE pump power of the replayed flows -- the same
+    honest convention as the other hand-offs. Raises if no incumbent is found
+    (Net2/BWSN-class networks -- itself the scalability finding).
+    """
+    from owf.config import SolverConfig
+    from owf.network import setup as setup_wdn
+    from owf.pwl_benchmark import solve_pwl_owf
+    from owf.solver import _true_pump_power
+    from owf.validation import validate_schedule
+    wdn = setup_wdn(SolverConfig(net_num=net))
+    r = solve_pwl_owf(wdn, K=K, time_limit=120.0)
+    if r.flows is None:
+        raise RuntimeError(f"PWL-MILP (K={K}) returned no incumbent in 120 s "
+                           f"({r.status}) — the benchmark cannot serve this net")
+    rep = validate_schedule(wdn, r)
+    ppump = np.abs(_true_pump_power(wdn, rep.flows_epanet))
+    ids = [str(wdn.raw.link_name_id[i]) for i in wdn.raw.link_pump_index]
+    return ppump, ids, wdn.time
+
+
+@_st.cache_data(show_spinner=False)
 def _owf_pump_kw(net: int, solver: str):
     """C-OWF *optimized* pump electrical power for a water net.
 
@@ -109,7 +134,8 @@ def render_power(st) -> None:
     handoff = st.session_state.get("dso_handoff")
     if couple:
         cc = st.columns([1, 2])
-        src_opts = ["EPANET rules (baseline)", "C-OWF optimized"]
+        src_opts = ["EPANET rules (baseline)", "C-OWF optimized",
+                    "⚔ C-OWF vs PWL-MILP benchmark (both)"]
         if handoff:
             src_opts.insert(0, "📡 Transmitted from Water tab")
         source = cc[0].radio(
@@ -144,8 +170,31 @@ def render_power(st) -> None:
             if source.endswith("optimized") and net in (97, 126):
                 cc[0].caption("⏳ optimized hand-off on Net3/BWSN solves the OWF first "
                               "(minutes on the first run; cached afterwards).")
+            pwl_k = None
+            if source.startswith("⚔"):
+                # fair benchmark: user picks the PWL grid resolution K
+                pwl_k = int(cc[0].selectbox(
+                    "PWL breakpoints K", [5, 9, 17], index=1, key="pwr_pwl_k",
+                    help="Breakpoints per pipe/pump curve in the benchmark "
+                         "MILP — more K = more accurate and more binaries."))
+                if net not in (3, 8, 11, 36, 126):
+                    st.warning("The PWL benchmark covers FSP networks without "
+                               "bypass/PRV (3-node, 8-node, Net1, Net2, BWSN).")
             try:
-                if source.endswith("optimized"):
+                if source.startswith("⚔") and net in (3, 8, 11, 36, 126):
+                    with st.spinner("Solving C-OWF and the PWL-MILP benchmark "
+                                    "(both cached per network)..."):
+                        (ppump_kw, pump_ids, horizon, owf_mode,
+                         ppump_lin) = _owf_pump_kw(net, solver)
+                        pwl_kw, _, _ = _pwl_pump_kw(net, pwl_k)
+                    cc[0].caption(f"Two schedules over **{horizon} h**: C-OWF "
+                                  f"(**{owf_mode}**) and PWL-MILP (K={pwl_k}) "
+                                  f"— one OPF each, compared below.")
+                    pump_sets = {"C-OWF optimized": ppump_kw,
+                                 f"PWL-MILP (K={pwl_k})": pwl_kw[:, :horizon]}
+                    if ppump_lin is not None:
+                        pump_lin_sets = {"C-OWF optimized": ppump_lin}
+                elif source.endswith("optimized"):
                     with st.spinner("Solving the decoupled C-OWF first (cached per "
                                     "network + solver)..."):
                         (ppump_kw, pump_ids, horizon, owf_mode,

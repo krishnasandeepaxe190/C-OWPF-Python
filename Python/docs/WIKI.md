@@ -260,6 +260,16 @@ a user-raised h_set is visibly "paying for pressure", not solver failure.
   modes updated in `MODE_SUGGESTION`. **Lesson: an honest external benchmark
   is also a test of your own recommended settings — comparing methods exposed
   two suboptimal defaults no unit test ever would.**
+- **Benchmark in the app (all three tabs, user-chosen K):** Water ⚔ panel
+  (`ui/benchmark_panel.py`) runs both methods head-to-head with model-size
+  columns (binary/continuous vars, constraint rows — SLA sizes measured on
+  the actual per-iterate CVXPY problem); the PWL schedule is stored in
+  session (`bm_pwl`) and joins the 📡 DSO transmit so the OPF comparison is
+  method-fair; the Power tab adds a "⚔ C-OWF vs PWL (both)" pump-load source
+  (`_pwl_pump_kw`, cached, 120 s budget, replayed-true-power convention); the
+  Coupled tab adds "PWL-MILP + OPF" as a third decoupled practice column with
+  Δ% (`dec_pwl`, replay-polished like the others). PWL hand-offs always use
+  the EPANET-replayed true power, never the PWL model's own flows.
 
 ## 4. Verification checklist (what "done" means here)
 

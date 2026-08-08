@@ -510,6 +510,8 @@ def render_water(st) -> None:
     records = st.session_state.water_records
     if not records:
         st.info("Configure a case above and press **Run water case**.")
+        from .benchmark_panel import render_benchmark
+        render_benchmark(st)
         return
     latest = records[-1]
     st.subheader(f"Result — run {latest['id']}: {latest['case'].label}")
@@ -525,6 +527,11 @@ def render_water(st) -> None:
                        "side if you send both).")
             opts = ["EPANET rule-based (baseline)",
                     f"C-OWF optimized (run {latest['id']})"]
+            # the PWL-MILP benchmark schedule (from the ⚔ panel below) is
+            # broadcastable too, so the DSO comparison is method-fair
+            pwl_av = (st.session_state.get("bm_pwl") or {}).get(latest["net"])
+            if pwl_av and pwl_av["horizon"] >= latest["horizon"]:
+                opts.append(f"PWL-MILP benchmark (K={pwl_av['K']})")
             chosen = st.multiselect("Schedules to transmit", opts, default=opts,
                                     key="w_tx_sel")
             if st.button("📡 Transmit to Power tab", key="w_tx_btn",
@@ -536,6 +543,9 @@ def render_water(st) -> None:
                     schedules["EPANET rules"] = pk[:, :latest["horizon"]]
                 if any(c.startswith("C-OWF") for c in chosen):
                     schedules["C-OWF optimized"] = latest["ppump_true"]
+                if any(c.startswith("PWL") for c in chosen) and pwl_av:
+                    schedules[f"PWL-MILP (K={pwl_av['K']})"] = \
+                        pwl_av["ppump"][:, :latest["horizon"]]
                 # the optimizer's linearized power (only exists for the LP-derived
                 # schedule) rides along so the Power tab can show the fidelity gap
                 schedules_linear = {}
@@ -559,3 +569,7 @@ def render_water(st) -> None:
     st.caption("**Cost** columns compare *different* schedules (EPANET rules vs C-OWF). "
                "**Replay** columns use the *same* schedule imposed back in EPANET — "
                "linearization fidelity, not the cost operating point.")
+
+    # --- benchmark vs notable methods (PWL-MILP) -------------------------------
+    from .benchmark_panel import render_benchmark
+    render_benchmark(st)

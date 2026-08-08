@@ -391,6 +391,17 @@ faster** where the PWL MILP solves at all, and matches or beats every
 deliverable PWL result on the honest EPANET-replayed cost; the PWL model
 returned no valid solution on Net2 or BWSN within a 300 s budget.
 
+The benchmark runs **live in the app**, with a user-chosen K everywhere:
+- **Water** — the ⚔ benchmark expander runs SLA vs PWL head-to-head and
+  tables solve time, model size (binary/continuous variables, constraint
+  rows), model-vs-replayed cost and replay error for each method.
+- **Water → Power** — the PWL schedule joins the 📡 DSO transmit (fair
+  broadcast), so the Power tab solves one OPF per schedule and compares them;
+  or pick the direct "⚔ C-OWF vs PWL-MILP benchmark (both)" pump-load source.
+- **Coupled** — the ⚔ expander adds "PWL-MILP + OPF" as a **third decoupled
+  practice** column with its own Δ%, so C-OWPF is scored against EPANET rules
+  + OPF, C-OWF + OPF *and* the notable method.
+
 ## Validation
 
 Two levels, both in `validation.py`:

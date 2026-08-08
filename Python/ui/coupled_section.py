@@ -122,6 +122,28 @@ def render_coupled(st) -> None:
             st.info(f"VSP active on {len(vsp)} pump(s); both the decoupled and coupled "
                     f"solves co-optimize pump speed.")
 
+    bench_pwl, bench_k = False, 9
+    if net in (3, 8, 11, 36, 126):
+        with st.expander("⚔ Benchmark vs notable method (PWL-MILP, TSG 2019)"):
+            st.caption("Adds a **third decoupled practice** to the comparison "
+                       "table: the PWL-MILP water schedule (Oikonomou & "
+                       "Parvania, 2019 — piecewise-linear pipes/pumps, one big "
+                       "MILP) handed to the OPF. C-OWPF is then scored against "
+                       "EPANET rules + OPF, C-OWF + OPF **and** the benchmark "
+                       "method + OPF, with Δ% vs each. The benchmark solves "
+                       "the FSP water layer (VSP/PRV selections above don't "
+                       "apply to it); 120 s MILP budget.")
+            bench_pwl = st.checkbox("Include PWL-MILP + OPF column",
+                                    key="cpl_bench")
+            bench_k = st.selectbox("PWL breakpoints K", [5, 9, 17], index=1,
+                                   key="cpl_bench_k",
+                                   help="More K = more accurate and more "
+                                        "binaries in the benchmark MILP.")
+            if bench_pwl and net in (36, 126):
+                st.warning("On this network the PWL MILP typically finds no "
+                           "incumbent within its budget — the column is then "
+                           "omitted (that is the scalability finding).")
+
     rs = st.columns([1, 3])
     avail = available_solvers()
     solver = rs[0].selectbox("MILP solver", SOLVER_CHOICES,
@@ -174,6 +196,24 @@ def render_coupled(st) -> None:
                 t_owf = _time.time() - t0
             except Exception:
                 dec_owf, t_owf = None, None
+        # Decoupled variant 3 (benchmark, optional): PWL-MILP schedule + OPF.
+        dec_pwl, t_pwl = None, None
+        if bench_pwl:
+            try:
+                from owf.config import SolverConfig as _SC
+                from owf.network import setup as _wsetup
+                from owf.pwl_benchmark import solve_pwl_owf
+                t0 = _time.time()
+                rb = solve_pwl_owf(_wsetup(_SC(net_num=net, price_choice=price)),
+                                   K=int(bench_k), time_limit=120.0)
+                if rb.onoff is not None:
+                    dec_pwl = solve_coupled_schedule(
+                        wdn, pdn, cc, rb.onoff[:, :wdn.time],
+                        replay_polish=True)
+                t_pwl = _time.time() - t0
+            except Exception:
+                dec_pwl, t_pwl = None, None
+
         # primary decoupled result (drives the metric header + Decoupled tab):
         # the water-optimized one when available, else the rules baseline.
         dec = dec_owf if dec_owf is not None else dec_rules
@@ -201,6 +241,7 @@ def render_coupled(st) -> None:
         rules_loss = (dec_loss if dec is dec_rules else coupled_loss_kwh(pdn, dec_rules))
         owf_loss = (None if dec_owf is None else
                     (dec_loss if dec is dec_owf else coupled_loss_kwh(pdn, dec_owf)))
+        pwl_loss = None if dec_pwl is None else coupled_loss_kwh(pdn, dec_pwl)
 
         # --- signal library for the correlation explorer -----------------------
         from pdn.feeders import FEEDERS as _F
@@ -261,6 +302,8 @@ def render_coupled(st) -> None:
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
         dec_rules=dec_rules, dec_owf=dec_owf, t_rules=t_rules, t_owf=t_owf,
         rules_loss=rules_loss, owf_loss=owf_loss,
+        dec_pwl=dec_pwl, t_pwl=t_pwl, pwl_loss=pwl_loss,
+        pwl_K=(int(bench_k) if bench_pwl else None),
         solver_log=cap["text"][-400_000:], signals=sig,
         water_plots=water_plots, water_md_sol=water_md_sol,
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
@@ -448,8 +491,11 @@ def _render_coupled_result(st) -> None:
     if dRl is None:                       # stale session from an older app version
         dRl, dOw = dec, None
     have_owf = dOw is not None
+    dPw = R.get("dec_pwl")                # ⚔ benchmark practice (optional)
+    have_pwl = dPw is not None
+    pwl_col = f"PWL-MILP (K={R.get('pwl_K')}) + OPF"
 
-    def _row(name, v_rules, v_owf, v_cpl, fmt="{:.4f}"):
+    def _row(name, v_rules, v_owf, v_cpl, fmt="{:.4f}", v_pwl=None):
         def _f(v):
             return "—" if v is None or not np.isfinite(v) else fmt.format(v)
         def _pct(base):
@@ -461,32 +507,47 @@ def _render_coupled_result(st) -> None:
         d = {"metric": name, "EPANET rules + OPF": _f(v_rules)}
         if have_owf:
             d["C-OWF + OPF"] = _f(v_owf)
+        if have_pwl:
+            d[pwl_col] = _f(v_pwl)
         d["C-OWPF (coupled)"] = _f(v_cpl)
         d["Δ% vs rules"] = _pct(v_rules)
         if have_owf:
             d["Δ% vs C-OWF"] = _pct(v_owf)
+        if have_pwl:
+            d["Δ% vs PWL"] = _pct(v_pwl)
         return d
 
     _g = lambda o, a: (None if o is None else getattr(o, a))
     cmp = pd.DataFrame([
         _row("pump-energy cost ($)", dRl.energy_cost, _g(dOw, "energy_cost"),
-             cpl.energy_cost),
+             cpl.energy_cost, v_pwl=_g(dPw, "energy_cost")),
         _row("network-loss cost ($)", dRl.loss_cost, _g(dOw, "loss_cost"),
-             cpl.loss_cost),
-        _row("TOTAL cost ($)", dRl.total_cost, _g(dOw, "total_cost"), cpl_total),
+             cpl.loss_cost, v_pwl=_g(dPw, "loss_cost")),
+        _row("TOTAL cost ($)", dRl.total_cost, _g(dOw, "total_cost"), cpl_total,
+             v_pwl=_g(dPw, "total_cost")),
         _row("min voltage (pu)", float(dRl.voltage.min()),
              None if dOw is None else float(dOw.voltage.min()),
-             float(cpl.voltage.min())),
+             float(cpl.voltage.min()),
+             v_pwl=None if dPw is None else float(dPw.voltage.min())),
         _row("voltage violation (pu)", dRl.v_violation, _g(dOw, "v_violation"),
-             cpl.v_violation),
+             cpl.v_violation, v_pwl=_g(dPw, "v_violation")),
         _row("true loss, Z-bus (kW·h)", R.get("rules_loss"), R.get("owf_loss"),
-             cpl_loss, "{:,.0f}"),
+             cpl_loss, "{:,.0f}", v_pwl=R.get("pwl_loss")),
         _row("water head slack (ft)", dRl.water_max_slack,
-             _g(dOw, "water_max_slack"), cpl.water_max_slack, "{:.3f}"),
+             _g(dOw, "water_max_slack"), cpl.water_max_slack, "{:.3f}",
+             v_pwl=_g(dPw, "water_max_slack")),
         _row("solve time (s)", R.get("t_rules", R.get("t_dec")), R.get("t_owf"),
-             R.get("t_cpl"), "{:.1f}"),
+             R.get("t_cpl"), "{:.1f}", v_pwl=R.get("t_pwl")),
     ])
     st.dataframe(cmp, use_container_width=True, hide_index=True)
+    if R.get("pwl_K") is not None and not have_pwl:
+        st.caption("⚔ The PWL-MILP benchmark found **no incumbent** within its "
+                   "120 s budget on this network — its column is omitted "
+                   "(the scalability finding; see docs/benchmark_pwl.md).")
+    elif have_pwl:
+        st.caption(f"⚔ **{pwl_col}** is the benchmark decoupled practice "
+                   f"(Oikonomou & Parvania 2019): its PWL water schedule handed "
+                   f"to the same OPF. Its solve time includes the PWL MILP.")
     if not have_owf:
         st.caption("⚡ **Fast** effort compares against the rules baseline only — "
                    "switch **Search effort → Thorough** to also compare against the "
