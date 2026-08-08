@@ -10,6 +10,8 @@ voltage feasibility, so the trade-off the coupling buys is explicit.
 """
 from __future__ import annotations
 
+import time as _time
+
 import numpy as np
 import pandas as pd
 import streamlit as _st
@@ -150,6 +152,7 @@ def render_coupled(st) -> None:
         # --- decoupled: water schedule, then imposed on the feeder --------------
         # Thorough uses the full water-optimal schedule; Fast uses EPANET's own
         # (skips the slow multi-candidate water search on big networks).
+        t0 = _time.time()
         if fast:
             dec_sched = epanet_default_onoff(wdn)
         else:
@@ -159,6 +162,7 @@ def render_coupled(st) -> None:
             except Exception:
                 dec_sched = epanet_default_onoff(wdn)
         dec = solve_coupled_schedule(wdn, pdn, cc, dec_sched)
+        t_dec = _time.time() - t0
 
         # --- coupled: voltage-aware joint schedule search ----------------------
         opt_kw = dict(verbose=False, inner_iter=8 if fast else 15,
@@ -172,7 +176,9 @@ def render_coupled(st) -> None:
             opt_kw["candidates"] = {k: allc[k] for k in
                                     ("load_shift", "cheapest_40pct", "cheapest_60pct")
                                     if k in allc}
+        t0 = _time.time()
         cpl, cpl_info = optimize_coupled_schedule(wdn, pdn, cc, **opt_kw)
+        t_cpl = _time.time() - t0
 
         val = validate_coupled(wdn, pdn, cpl, vmin=vmin, vmax=vmax)
         dec_loss = coupled_loss_kwh(pdn, dec)      # true Z-bus loss (kW·h)
@@ -195,7 +201,7 @@ def render_coupled(st) -> None:
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
         pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss,
-        prv_fig=prv_fig,
+        prv_fig=prv_fig, t_dec=t_dec, t_cpl=t_cpl,
         link_ids=[str(s) for s in wdn.raw.link_name_id],
         node_ids=[str(s) for s in wdn.raw.node_name_id],
         pump_ids=[str(wdn.raw.link_name_id[i]) for i in wdn.raw.link_pump_index],
@@ -293,12 +299,17 @@ def _render_coupled_result(st) -> None:
         _r("voltage violation (pu)", dec.v_violation, cpl.v_violation),
         _r("true loss, Z-bus (kW·h)", dec_loss, cpl_loss, "{:,.0f}"),
         _r("water head slack (ft)", dec.water_max_slack, cpl.water_max_slack, "{:.3f}"),
+        _r("solve time (s)", R.get("t_dec", float("nan")),
+           R.get("t_cpl", float("nan")), "{:.1f}"),
     ])
     st.dataframe(cmp, use_container_width=True, hide_index=True)
     st.caption("Objective (paper 33d): **pump energy + priced network loss**, both at the "
                "WDN electricity price. Decoupled optimizes the water schedule blind to the "
                "grid then imposes its pump load; coupled co-optimizes pump timing and PV "
-               "reactive to cut loss and hold voltages — the Δ is the dollar saving.")
+               "reactive to cut loss and hold voltages — the Δ is the dollar saving. "
+               "**Solve time**: decoupled = its schedule + one fixed-schedule coupled LP; "
+               "coupled = the full voltage-aware schedule search (baseline, candidates, "
+               "trust-region MILP, polish) — the Δ% is the computational price of coupling.")
 
     T = cpl.voltage.shape[1]
     h0 = min(12, T - 1)

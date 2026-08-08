@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +27,36 @@ from .theme import WATER, section_header
 
 def _csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv().encode()
+
+
+def _run_capturing_all(fn):
+    """Run ``fn`` while capturing BOTH Python-level stdout and the C-level fd 1/2.
+
+    HiGHS/MOSEK/EPANET are C libraries that write their logs (presolve, primal/
+    dual simplex, branch-and-bound) straight to file descriptor 1 -- invisible to
+    ``contextlib.redirect_stdout``. Temporarily point fd 1 and 2 into a temp file
+    so the full solver log is captured. Returns (fn_result, captured_text).
+    """
+    fd_out, fd_err = os.dup(1), os.dup(2)
+    tmp = tempfile.TemporaryFile(mode="w+b")
+    try:
+        os.dup2(tmp.fileno(), 1)
+        os.dup2(tmp.fileno(), 2)
+        try:
+            result = fn()
+        finally:
+            try:
+                import sys
+                sys.stdout.flush(); sys.stderr.flush()
+            except Exception:
+                pass
+            os.dup2(fd_out, 1)
+            os.dup2(fd_err, 2)
+        tmp.flush(); tmp.seek(0)
+        text = tmp.read().decode("utf-8", "ignore")
+    finally:
+        os.close(fd_out); os.close(fd_err); tmp.close()
+    return result, text
 
 
 @_st.cache_data(show_spinner=False)
@@ -75,7 +107,14 @@ def _session_df(records) -> pd.DataFrame:
             "replay min press. ft": round(c.min_pressure, 1) if np.isfinite(c.min_pressure) else None,
             "feasible": "yes" if c.converged else "no", "time s": round(c.elapsed),
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # computation-time difference vs the first run of the session, in %
+    if len(rows) > 1 and rows[0]["time s"]:
+        t0 = float(rows[0]["time s"])
+        df["time Δ% vs run 1"] = [
+            "—" if i == 0 else f"{100.0 * (r['time s'] - t0) / t0:+.0f}%"
+            for i, r in enumerate(rows)]
+    return df
 
 
 def _render_case(st, rec) -> None:
@@ -247,10 +286,15 @@ def render_water(st) -> None:
         with st.spinner(f"Solving {NETWORKS[net].name} in {label} ({eta})..."):
             log_buf = io.StringIO()
             try:
-                with contextlib.redirect_stdout(log_buf):
-                    case, wdn, result = run_case(net, mode, price, None, plot=True,
-                                                 outdir="outputs", verbose=False,
-                                                 solver=solver, vsp=vsp, prv=prv)
+                # verbose=True turns on the solver's own log (HiGHS/MOSEK presolve,
+                # primal/dual simplex, branch-and-bound); those are C-level writes,
+                # so capture fd 1/2 as well as Python stdout.
+                def _job():
+                    with contextlib.redirect_stdout(log_buf):
+                        return run_case(net, mode, price, None, plot=True,
+                                        outdir="outputs", verbose=True,
+                                        solver=solver, vsp=vsp, prv=prv)
+                (case, wdn, result), solver_log = _run_capturing_all(_job)
             except Exception as exc:
                 st.error(f"Case failed: {exc}")
                 case = None
@@ -284,7 +328,13 @@ def render_water(st) -> None:
                 except Exception:
                     prv_fig = None
             st.session_state.water_records.append({
-                "id": run_id, "case": case, "log": log_buf.getvalue(), "plots": plots,
+                "id": run_id, "case": case,
+                # python-level prints + the C-level solver log (HiGHS/MOSEK
+                # primal-dual iterations); keep the tail if it's enormous
+                "log": (log_buf.getvalue() + "\n" + "=" * 60
+                        + " SOLVER LOG (HiGHS/MOSEK/SCIP) " + "=" * 60 + "\n"
+                        + solver_log)[-400_000:],
+                "plots": plots,
                 "map_data": extract_map_data(wdn, result),
                 "prv_fig": prv_fig,
                 "exports": (_build_exports(case, wdn, result)

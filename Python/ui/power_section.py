@@ -6,6 +6,8 @@ nonlinear Z-bus -> true voltages and true loss (with vs without VAr support).
 """
 from __future__ import annotations
 
+import time as _time
+
 import numpy as np
 import pandas as pd
 import streamlit as _st
@@ -108,11 +110,16 @@ def render_power(st) -> None:
 
     with st.spinner(f"Solving reactive OPF on {fmeta['label']} over {horizon} h "
                     f"+ Z-bus verification..."):
+        t0 = _time.time()
         res = solve_pdn_opf(pdn, T=horizon, pump_load_pu=pump_load, load_shape=load_shape,
                             vmin=vmin, vmax=vmax)
+        elapsed = _time.time() - t0
 
+    prev = st.session_state.get("pwr_result") or {}
     st.session_state["pwr_result"] = dict(res=res, feeder=feeder, fmeta=fmeta,
-                                          pump_buses=pump_buses, vmin=vmin, vmax=vmax)
+                                          pump_buses=pump_buses, vmin=vmin, vmax=vmax,
+                                          elapsed=elapsed,
+                                          prev_elapsed=prev.get("elapsed"))
     _render_power_result(st)
 
 
@@ -123,7 +130,7 @@ def _render_power_result(st) -> None:
     res, fmeta = R["res"], R["fmeta"]
     vmin, vmax = R["vmin"], R["vmax"]
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("True Vmin (Z-bus)", f"{np.nanmin(res.v_nl):.4f} pu",
               help="Worst nonlinear bus voltage across the day.")
     m2.metric("Voltage violation", f"{res.v_violation:.4f} pu",
@@ -133,6 +140,12 @@ def _render_power_result(st) -> None:
               delta=f"-{res.loss_reduction_pct:.1f}% vs no VAr", delta_color="inverse")
     m4.metric("LinDistFlow vs Z-bus", f"{np.nanmax(np.abs(res.v_lin - res.v_nl)):.4f} pu",
               help="Max linear-model error against the nonlinear replay.")
+    el, pel = R.get("elapsed"), R.get("prev_elapsed")
+    dt = (f"{100.0 * (el - pel) / pel:+.0f}% vs last run"
+          if el is not None and pel else None)
+    m5.metric("Solve time", f"{el:.1f} s" if el is not None else "—", delta=dt,
+              delta_color="inverse",
+              help="OPF + Z-bus verification wall-clock; Δ% vs the previous Power run.")
 
     T = res.v_nl.shape[1]
     h0 = min(12, T - 1)
