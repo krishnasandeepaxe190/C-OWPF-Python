@@ -199,6 +199,32 @@ def render_coupled(st) -> None:
         rules_loss = (dec_loss if dec is dec_rules else coupled_loss_kwh(pdn, dec_rules))
         owf_loss = (None if dec_owf is None else
                     (dec_loss if dec is dec_owf else coupled_loss_kwh(pdn, dec_owf)))
+
+        # --- signal library for the correlation explorer -----------------------
+        from pdn.feeders import FEEDERS as _F
+        SBk = float(_F[feeder]["SBase"]) / 1000.0          # pu -> kW
+        Tw = wdn.time
+        sig = {
+            "electricity price": np.asarray(wdn.price_final)[:Tw],
+            "water demand (GPM)": np.asarray(wdn.junction_demand_profile).sum(axis=0)[:Tw],
+            "pump power (kW)": np.asarray(cpl.ppump_true).sum(axis=0)[:Tw],
+            "pumps ON (count)": np.round(np.asarray(cpl.onoff)).sum(axis=0)[:Tw],
+        }
+        if getattr(cpl, "speed", None) is not None:
+            on = np.round(np.asarray(cpl.onoff))
+            sig["mean pump speed ω"] = ((np.asarray(cpl.speed) * on).sum(axis=0)
+                                        / np.maximum(on.sum(axis=0), 1.0))[:Tw]
+        if np.asarray(cpl.pv_p).size:
+            sig["PV active (kW)"] = np.asarray(cpl.pv_p).sum(axis=0)[:Tw] * SBk
+            sig["PV reactive (kvar)"] = np.asarray(cpl.pv_q).sum(axis=0)[:Tw] * SBk
+        sig["min voltage, Z-bus (pu)"] = np.asarray(val.v_nl).min(axis=0)[:Tw]
+        sig["grid import (kW)"] = np.asarray(cpl.grid_kw)[:Tw]
+        sig["network loss (kW)"] = np.asarray(cpl.loss_kw)[:Tw]
+        for nnode in wdn.raw.tank_index:
+            sig[f"tank {wdn.raw.node_name_id[nnode]} head (ft)"] = \
+                np.asarray(cpl.heads)[nnode, :Tw]
+        if getattr(cpl, "prv", None):
+            sig["PRV head loss (ft)"] = np.asarray(cpl.prv["R_prv"]).sum(axis=0)[:Tw]
         prv_fig = None
         if getattr(cpl, "prv", None) and wdn.n_valves:
             try:
@@ -217,7 +243,7 @@ def render_coupled(st) -> None:
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
         dec_rules=dec_rules, dec_owf=dec_owf, t_rules=t_rules, t_owf=t_owf,
         rules_loss=rules_loss, owf_loss=owf_loss,
-        solver_log=cap["text"][-400_000:],
+        solver_log=cap["text"][-400_000:], signals=sig,
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
         pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss,
         prv_fig=prv_fig, t_dec=t_dec, t_cpl=t_cpl,
@@ -456,7 +482,7 @@ def _render_coupled_result(st) -> None:
     h0 = min(12, T - 1)
     tab_names = ["🔗 Coupling map", "Feeder map", "Voltage profile", "Pump schedule",
                  "PV reactive", "Search trace", "Decoupled solution", "🔎 Inspector",
-                 "🖥 Solver log"]
+                 "🖥 Solver log", "🧬 Correlations"]
     if R.get("prv_fig") is not None:
         tab_names.append("PRV")
     tabs = st.tabs(tab_names)
@@ -517,6 +543,9 @@ def _render_coupled_result(st) -> None:
                    "([coupled-opt] lines), and the solver's own presolve / primal-dual "
                    "/ branch-and-bound output (HiGHS/MOSEK/SCIP). Tail-truncated to "
                    "400 kB.")
+    with tabs[8]:
+        from .correlations import render_correlations
+        render_correlations(st, R.get("signals") or {}, "cpl")
     if R.get("prv_fig") is not None:
         with tabs[-1]:
             st.plotly_chart(R["prv_fig"], use_container_width=True, key="cpl_prv_fig")

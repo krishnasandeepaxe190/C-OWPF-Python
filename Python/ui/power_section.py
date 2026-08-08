@@ -204,11 +204,27 @@ def render_power(st) -> None:
     compare = ({lbl: (r, t) for lbl, (r, t) in runs.items()}
                if len(runs) > 1 else None)
 
+    # --- signal library for the correlation explorer ---------------------------
+    SBk = float(res.SBase) / 1000.0                      # pu -> kW
+    shape = (np.asarray(load_shape, float)[:horizon] if load_shape is not None
+             else np.ones(horizon))
+    sig = {"feeder base load (kW)": shape * float(np.sum(pdn.model.p_load)) * SBk}
+    pk0 = pump_sets.get(primary)
+    if pk0 is not None:
+        sig["pump load (kW)"] = np.asarray(pk0).sum(axis=0)[:horizon]
+    if res.p_pv.size:
+        sig["PV active (kW)"] = np.asarray(res.p_pv).sum(axis=0)[:horizon] * SBk
+        sig["PV reactive (kvar)"] = np.asarray(res.q_pv).sum(axis=0)[:horizon] * SBk
+    sig["min voltage, Z-bus (pu)"] = np.asarray(res.v_nl).min(axis=0)[:horizon]
+    sig["loss, optimized VAr (kW)"] = np.asarray(res.loss_kw)[:horizon]
+    sig["loss, no VAr (kW)"] = np.asarray(res.loss_base_kw)[:horizon]
+
     prev = st.session_state.get("pwr_result") or {}
     st.session_state["pwr_result"] = dict(res=res, feeder=feeder, fmeta=fmeta,
                                           pump_buses=pump_buses, vmin=vmin, vmax=vmax,
                                           elapsed=elapsed, compare=compare,
                                           primary=primary, solver_log=solver_log,
+                                          signals=sig,
                                           prev_elapsed=prev.get("elapsed"),
                                           pv_rating=pdn.pv_rating[pdn.pv_buses].copy())
     _render_power_result(st)
@@ -272,7 +288,8 @@ def _render_power_result(st) -> None:
     h0 = min(12, T - 1)
     tabs = st.tabs(["Feeder map", "Voltage profile", "Voltage heatmap",
                     "PV reactive", "Loss", "Setpoints (CSV)",
-                    "⚡ PV capacity", "🔎 Inspector", "🖥 Solver log"])
+                    "⚡ PV capacity", "🔎 Inspector", "🖥 Solver log",
+                    "🧬 Correlations"])
     with tabs[6]:
         if res.q_pv.size and R.get("pv_rating") is not None:
             st.plotly_chart(
@@ -313,6 +330,9 @@ def _render_power_result(st) -> None:
         st.caption("Full solver output for every OPF solved in this run (one block "
                    "per handed-off schedule): CVXPY compilation, HiGHS/MOSEK "
                    "presolve and primal-dual iterations.")
+    with tabs[9]:
+        from .correlations import render_correlations
+        render_correlations(st, R.get("signals") or {}, "pwr")
     with tabs[0]:
         hr = st.slider("Hour", 0, T - 1, h0, key="pwr_map_hr")
         st.plotly_chart(P.feeder_map(fmeta, res.v_nl, hr, res.pv_buses,
