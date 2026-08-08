@@ -9,6 +9,7 @@ captured, then restore them. Used by the Water, Power and Coupled tabs.
 from __future__ import annotations
 
 import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -18,25 +19,41 @@ import tempfile
 def capture_fds():
     """Context manager capturing fd-level stdout+stderr.
 
+    Besides redirecting fd 1/2 into a temp file, ``sys.stdout``/``sys.stderr``
+    are REBOUND to fresh UTF-8 writers over the captured descriptors for the
+    duration of the block. This matters in a served Streamlit app: the server's
+    original ``sys.stdout`` can be a closed/odd console stream (run_ui.bat,
+    detached windows, cp1252 consoles), and a bare ``print`` inside the block
+    would crash the tab. With the rebind, every print -- ours or a library's --
+    lands in the captured log regardless of the host console's state.
+
     Usage::
 
         with capture_fds() as cap:
-            ...solves...
+            ...solves / prints...
         text = cap["text"]          # available after the block exits
     """
     fd_out, fd_err = os.dup(1), os.dup(2)
     tmp = tempfile.TemporaryFile(mode="w+b")
     os.dup2(tmp.fileno(), 1)
     os.dup2(tmp.fileno(), 2)
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    new_stdout = io.TextIOWrapper(os.fdopen(os.dup(1), "wb"), encoding="utf-8",
+                                  errors="replace", line_buffering=True)
+    new_stderr = io.TextIOWrapper(os.fdopen(os.dup(2), "wb"), encoding="utf-8",
+                                  errors="replace", line_buffering=True)
+    sys.stdout, sys.stderr = new_stdout, new_stderr
     out = {"text": ""}
     try:
         yield out
     finally:
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        except Exception:
-            pass
+        for s in (new_stdout, new_stderr):
+            try:
+                s.flush()
+                s.close()          # closes only the dup'd descriptor
+            except Exception:
+                pass
+        sys.stdout, sys.stderr = old_stdout, old_stderr
         os.dup2(fd_out, 1)
         os.dup2(fd_err, 2)
         os.close(fd_out)
