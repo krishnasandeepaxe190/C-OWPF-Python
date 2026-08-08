@@ -39,3 +39,6 @@ Thumbs.db
 
 # solver licenses (MOSEK / Gurobi) -- never commit
 *.lic
+
+# Claude Code local config -- never publish
+.claude/
