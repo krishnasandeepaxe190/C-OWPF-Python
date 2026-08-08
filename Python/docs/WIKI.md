@@ -149,6 +149,16 @@ a user-raised h_set is visibly "paying for pressure", not solver failure.
 - **Coupled three-way comparison:** `dec_rules` (always) and `dec_owf`
   (Thorough) are both solved and tabled against C-OWPF with Δ% per practice —
   the coupling's value vs *both* real decoupled workflows.
+- **Solver logs everywhere:** `ui/capture.py` (`capture_fds` context manager /
+  `run_capturing_all`) redirects fd 1/2 so the C-level HiGHS/MOSEK/EPANET
+  output is captured. Water, Power AND Coupled each have a 🖥 Solver-log tab;
+  Power prints one banner block per handed-off schedule; Coupled captures the
+  whole pipeline (search candidates + primal-dual logs), 400 kB tail.
+- **🧬 Correlation explorer** (Power + Coupled): signal library built at run
+  time (`R["signals"]` — price, demand, pump kW, pumps ON, VSP speed, PV P/Q,
+  min Z-bus voltage, grid import, loss, tank heads, PRV head loss). Three
+  views in `ui/correlations.py`: playable normalized overlay, Pearson matrix,
+  user-drawn pair scatter with trend + r.
 - **Doc rule (standing):** every commit batch ends by updating README, the
   codebase PDF (`ast_extract.py` + `codebase_summary.tex` recompile), and this
   wiki.

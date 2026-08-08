@@ -160,14 +160,20 @@ Five tabs, plus a **System / Light / Dark** appearance toggle:
   (acknowledged with a banner; **both schedules are solved separately and their
   OPF results compared** when two arrive), or pick EPANET rules / C-OWF optimized
   directly. Outputs: feeder voltage map, voltage profile (linear vs Z-bus),
-  voltage heatmap, PV reactive dispatch + **capacity utilization**, and **true
-  loss** (with vs without VAr support), plus a setpoints CSV.
+  voltage heatmap, PV reactive dispatch + **capacity utilization**, **true
+  loss** (with vs without VAr support), a setpoints CSV, the full **solver log**
+  (fd-level capture: HiGHS/MOSEK presolve + primal-dual iterations), and a
+  **🧬 correlation explorer** (playable signal overlay, Pearson matrix,
+  user-drawn pair scatter).
 - **🔗 Coupled** — joint C-OWPF against **both decoupled practices**: EPANET rules
   + OPF (always) and C-OWF + OPF (Thorough effort), with Δ% savings vs each.
   Controls: water net, feeder, pump→bus, PV sizing/count, voltage limits, VSP/PRV,
   solver choice, and a **Fast / Thorough** search-effort switch (Fast is
-  recommended for Net3 / SB-128). Coupling map, decoupled-solution tables, and
-  validation against EPANET (water) and Z-bus (power).
+  recommended for Net3 / SB-128). Coupling map, decoupled-solution tables, the
+  full pipeline **solver log** (every search candidate + primal-dual output), a
+  **🧬 correlation explorer** (price / demand / pump kW / PV / voltage / loss /
+  tank heads co-evolving, with Pearson matrix and pair scatter), and validation
+  against EPANET (water) and Z-bus (power).
 - **📖 Guide** — the full methodology, including the power and coupled sections.
 
 ## Network status
