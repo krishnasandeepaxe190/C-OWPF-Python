@@ -65,6 +65,25 @@ def solve_coupled_schedule(wdn: WDN, pdn: PDN, cc: CoupledConfig,
     return res
 
 
+def epanet_replay(wdn: WDN, res: CoupledResult):
+    """Replay (schedule, speeds) in EPANET; returns (max |dHead| ft, h_ep, f_ep).
+
+    The honest hydraulic judge: an LP-feasible schedule can still be
+    un-runnable (e.g. drains a tank) on a big network. Raises on EPANET failure
+    -- callers ranking candidates should treat that as infinite error.
+    """
+    T = wdn.time
+    pl = (wdn.raw.link_pump_index + 1).tolist()
+    bl = [(int(lk) + 1, int(np.argmax(wdn.M.S_bypass_pump[i])))
+          for i, lk in enumerate(wdn.M.bypass_index)]
+    from owf.epanet_io import simulate_with_schedule
+    s = np.round(res.onoff)
+    h_ep, f_ep = simulate_with_schedule(
+        wdn.spec.inp_path, pl, s, T, wdn.n_nodes, wdn.n_links,
+        bypass_links=bl, pump_speeds=res.speed)
+    return float(np.max(np.abs(h_ep - res.heads[:, :T]))), h_ep, f_ep
+
+
 def _replay_polish(wdn: WDN, pdn: PDN, cc: CoupledConfig,
                    res: CoupledResult, rounds: int = 2) -> CoupledResult:
     """EPANET speed-pinned polish for a coupled VSP result.
@@ -81,22 +100,8 @@ def _replay_polish(wdn: WDN, pdn: PDN, cc: CoupledConfig,
     if res is None or res.flows is None or not getattr(res.flows, "size", 0):
         return res
     try:
-        from owf.epanet_io import simulate_with_schedule
-
-        T = wdn.time
-        pl = (wdn.raw.link_pump_index + 1).tolist()
-        bl = [(int(lk) + 1, int(np.argmax(wdn.M.S_bypass_pump[i])))
-              for i, lk in enumerate(wdn.M.bypass_index)]
-
-        def _replay_err(r):
-            s = np.round(r.onoff)
-            h_ep, f_ep = simulate_with_schedule(
-                wdn.spec.inp_path, pl, s, T, wdn.n_nodes, wdn.n_links,
-                bypass_links=bl, pump_speeds=r.speed)
-            return float(np.max(np.abs(h_ep - r.heads[:, :T]))), h_ep, f_ep
-
         best, cur = res, res
-        best_err, h_ep, f_ep = _replay_err(res)
+        best_err, h_ep, f_ep = epanet_replay(wdn, res)
         for _ in range(rounds):
             sched = np.round(cur.onoff)
             cfg2 = replace(wdn.config, fixed_schedule=sched,

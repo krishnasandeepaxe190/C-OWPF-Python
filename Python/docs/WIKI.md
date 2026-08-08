@@ -132,6 +132,19 @@ CONTROLS so EPANET switches like the model. Result: 0.8 ft reproduction.
 Soft-bound LP scores can rank a tank-draining schedule as cheapest. For >100
 node nets the winner AND the EPANET baseline AND load_shift are re-validated by
 EPANET replay; cheapest schedule with replay error <= 5 ft wins.
+**The COUPLED search needed the same guard (found 2026-08-08 when large nets
+were finally tested coupled):** on Net3 the Fast search ACCEPTED a schedule
+costing MORE than the baseline (0.706 vs 0.451) that replayed at **74.7 ft** —
+the under-converged baseline scored "infeasible" on its soft slack at
+inner_iter=8, while the junk schedule scored "feasible" and won the
+feasible-first ranking. Fix: `optimize_coupled_schedule` finals replay both
+the winner and the baseline in EPANET (`coupled.runner.epanet_replay`) and
+rank replay-honest (<= 5 ft) candidates first. Net3 coupled now returns the
+baseline honestly: 3.8 ft replay, 0% savings, never worse than decoupled.
+**Lesson: any schedule search that ranks on soft-bound LP feasibility MUST
+end with an exact-simulator replay check — in BOTH the water and coupled
+searches. Small networks never expose this (everything converges tightly);
+test the big nets in every search path.**
 
 ### VSP: three traps
 1. **McCormick envelope is invalid when the pump is OFF** (omega=0 is outside

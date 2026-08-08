@@ -161,8 +161,13 @@ def optimize_coupled_schedule(wdn, pdn, cc, v_tol: float = 0.02,
     # can win on an under-converged score yet be worse once fully solved. Re-solve
     # BOTH the winner and the EPANET baseline cleanly and keep the genuinely best,
     # which guarantees the coupled result is never worse than the decoupled one.
-    # replay_polish: on VSP networks, finish each final with the EPANET
+    # replay_polish: on VSP/PRV networks, finish each final with the EPANET
     # speed-pinned polish so the returned result replays at the solved speeds.
+    # EPANET-replay ranking (the water-side search's honest-hydraulics guard):
+    # on big networks an under-converged baseline can score "infeasible" on its
+    # soft slack while a schedule EPANET would reject (drained tank) scores
+    # "feasible" and wins -- Net3 accepted a 74.7-ft-replay schedule this way.
+    # Replay both finals and rank replay-honest candidates first (5 ft tol).
     finals = []
     for sched in (best_sched, base_sched):
         f = solve_coupled_schedule(wdn, pdn, cc, sched, soft_bounds=True,
@@ -170,7 +175,16 @@ def optimize_coupled_schedule(wdn, pdn, cc, v_tol: float = 0.02,
                                    replay_polish=True)
         if f.flows is not None and f.flows.size:
             fkey, fcost, fv = _score(wdn, f, feas_tol, v_tol)
-            finals.append((fkey, fcost, fv, f, _apply_availability(wdn, np.round(sched))))
+            try:
+                from .runner import epanet_replay
+                rep_err = epanet_replay(wdn, f)[0]
+            except Exception:
+                rep_err = float("inf")
+            if verbose:
+                print(f"[coupled-opt] final: cost={fcost:.5f} "
+                      f"EPANET replay={rep_err:.2f} ft")
+            finals.append(((rep_err > 5.0,) + fkey, fcost, fv, f,
+                           _apply_availability(wdn, np.round(sched))))
     if finals:
         fkey, fcost, fv, f, fsched = min(finals, key=lambda t: t[0])
         best, best_cost, best_v, best_sched = f, fcost, fv, fsched
