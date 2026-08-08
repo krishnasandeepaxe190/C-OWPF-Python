@@ -243,6 +243,24 @@ a user-raised h_set is visibly "paying for pressure", not solver failure.
   codebase PDF (`ast_extract.py` + `codebase_summary.tex` recompile), and this
   wiki.
 
+## 3c. Benchmark vs. notable methods (2026-08-08)
+
+- **PWL-MILP comparison (Oikonomou & Parvania, IEEE TSG 2019)** implemented in
+  `owf/pwl_benchmark.py`, full study in `docs/benchmark_pwl.md`. Headlines:
+  SLA uses **89–99.86% fewer binaries** (UT vs (S+U)(K−1)T+UT), is up to 67×
+  faster where PWL solves at all, and every deliverable PWL result is matched
+  or beaten on the EPANET-replayed cost. PWL K=5 made Net2 *infeasible*; K=17
+  already intractable on the 8-node; BWSN (35,050 binaries) returned no
+  incumbent in 300 s. **Score BOTH methods on the replayed cost** — a PWL
+  MILP can be "optimal" for its surrogate while its schedule replays 58 ft off
+  (8-node K=9) with 700 GPM pump-flow error (K=5).
+- **Benchmarking improved our own defaults:** 3-node `direct` sat at the
+  all-ON local fixed point (0% savings; `optimize` → 83.5% in 2.8 s), Net1
+  `warmstart` was 31% costlier than `optimize` at equal runtime. Recommended
+  modes updated in `MODE_SUGGESTION`. **Lesson: an honest external benchmark
+  is also a test of your own recommended settings — comparing methods exposed
+  two suboptimal defaults no unit test ever would.**
+
 ## 4. Verification checklist (what "done" means here)
 
 1. `python -m pytest Python/tests` — all green (run `test_plots.py` separately

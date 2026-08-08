@@ -379,6 +379,18 @@ Decision variables over `Time` steps: pipe+pump `Flows`, nodal `Heads`, pump pow
 - **Tank dynamics** — integrator state-space + head bounds + terminal level
 - **Reservoir / junction head bounds**
 
+## Benchmark vs. notable methods
+
+`owf/pwl_benchmark.py` re-implements the piecewise-linear MILP linearization of
+Oikonomou & Parvania (IEEE Trans. Smart Grid, 2019) on this study's networks,
+data, objective and solver, so the two linearization strategies compare
+apples-to-apples. Full study: [`docs/benchmark_pwl.md`](docs/benchmark_pwl.md).
+Summary: successive linearization uses **89–99.86% fewer binaries** (pump
+on/off only, vs (K−1) segment binaries per pipe/pump-hour), is up to **67×
+faster** where the PWL MILP solves at all, and matches or beats every
+deliverable PWL result on the honest EPANET-replayed cost; the PWL model
+returned no valid solution on Net2 or BWSN within a 300 s budget.
+
 ## Validation
 
 Two levels, both in `validation.py`:

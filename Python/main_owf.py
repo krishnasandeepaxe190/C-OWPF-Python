@@ -63,9 +63,14 @@ MODES = {
 # (recommended, alternative worth trying)
 MODE_SUGGESTION = {
     8: ("direct", "optimize"),
-    3: ("direct", "optimize"),
+    # 3-node: direct converges to the all-ON local fixed point (0% savings);
+    # optimize finds the 4-ON-hour schedule (83.5% savings, replay 0.005 ft,
+    # ~3 s) -- found during the PWL-MILP benchmark comparison.
+    3: ("optimize", "direct"),
     108: ("warmstart", "optimize"),
-    11: ("warmstart", "optimize"),
+    # Net1: optimize beats warmstart's cheap_hours candidate by 31% (0.165 vs
+    # 0.238) in the same ~20 s, replay 0.005 ft -- found during the benchmark.
+    11: ("optimize", "warmstart"),
     36: ("warmstart", "optimize"),
     97: ("epanet", "optimize"),
     126: ("optimize", "epanet"),
