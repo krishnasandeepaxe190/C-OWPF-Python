@@ -21,3 +21,6 @@ docs/*.toc
 
 # Local dev
 .streamlit/secrets.toml
+
+# solver licenses -- never bake into an image
+*.lic

@@ -36,3 +36,6 @@ Thumbs.db
 
 # cygwin crash dumps
 *.stackdump
+
+# solver licenses (MOSEK / Gurobi) -- never commit
+*.lic

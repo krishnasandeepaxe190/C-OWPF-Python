@@ -13,6 +13,14 @@ from typing import Optional, List
 # Repository-relative data directory (Python/data/...).
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
+# MOSEK license: if a (git-ignored) mosek.lic sits at the repo root, point MOSEK
+# at it unless the user already set MOSEKLM_LICENSE_FILE. MOSEK also finds
+# ~/mosek/mosek.lic on its own; this just makes the repo copy work everywhere.
+import os as _os
+_MOSEK_LIC = Path(__file__).resolve().parent.parent.parent / "mosek.lic"
+if _MOSEK_LIC.exists():
+    _os.environ.setdefault("MOSEKLM_LICENSE_FILE", str(_MOSEK_LIC))
+
 # Pump power coefficient  c_m = 0.7457 / (3960 * eff),  eff = 0.81  [kW per (gpm*ft)]
 # 0.7457 converts hp -> kW; 3960 converts gpm*ft -> hp.
 C_M = 0.7457 / (3960 * 0.81)
