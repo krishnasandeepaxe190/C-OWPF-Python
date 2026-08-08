@@ -101,7 +101,7 @@ def _session_df(records) -> pd.DataFrame:
         rows.append({
             "run": rec["id"], "case": c.label,
             "EPANET cost (rules)": round(c.epanet_cost, 5),
-            "C-OWPF cost": round(c.owf_cost, 5) if np.isfinite(c.owf_cost) else None,
+            "C-OWF cost": round(c.owf_cost, 5) if np.isfinite(c.owf_cost) else None,
             "saving %": round(c.savings_pct, 1) if np.isfinite(c.savings_pct) else None,
             "replay max |dHead| ft": round(c.max_dhead, 3) if np.isfinite(c.max_dhead) else None,
             "replay min press. ft": round(c.min_pressure, 1) if np.isfinite(c.min_pressure) else None,
@@ -117,6 +117,134 @@ def _session_df(records) -> pd.DataFrame:
     return df
 
 
+def _render_inspector(st, rec) -> None:
+    """Pick any links/nodes and plot their time series -- flow(t), head(t),
+    pressure(t) -- straight from the solved fields (student exploration)."""
+    import plotly.graph_objects as go
+    md = rec["map_data"]
+    if "flows" not in md:
+        st.info("No solved time series to inspect.")
+        return
+    T = md["time"]
+    hrs = list(range(T))
+    link_lbl = [f"{md['link_kind'][i]} {md['link_id'][i]}" for i in range(len(md["link_id"]))]
+    node_lbl = [f"{md['node_kind'][i]} {md['node_id'][i]}" for i in range(len(md["node_id"]))]
+    c1, c2 = st.columns(2)
+    with c1:
+        sel_l = st.multiselect("Links → flow (GPM)", link_lbl,
+                               default=[l for l in link_lbl if l.startswith("pump")][:1],
+                               key=f"insp_l_{rec['id']}")
+        if sel_l:
+            fig = go.Figure()
+            for lbl in sel_l:
+                i = link_lbl.index(lbl)
+                fig.add_trace(go.Scatter(x=hrs, y=md["flows"][i, :T],
+                                         mode="lines+markers", name=lbl))
+            fig.update_layout(height=330, xaxis_title="hour", yaxis_title="flow (GPM)",
+                              margin=dict(l=10, r=10, t=25, b=10),
+                              legend=dict(orientation="h", y=-0.3, x=0),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, key=f"insp_lf_{rec['id']}")
+    with c2:
+        what = st.radio("Node quantity", ["head h(t) [ft]", "pressure p(t) [ft]"],
+                        horizontal=True, key=f"insp_q_{rec['id']}")
+        sel_n = st.multiselect("Nodes", node_lbl,
+                               default=[n for n in node_lbl if n.startswith("tank")][:1],
+                               key=f"insp_n_{rec['id']}")
+        if sel_n:
+            src = md["heads"] if what.startswith("head") else md["pressure"]
+            fig = go.Figure()
+            for lbl in sel_n:
+                i = node_lbl.index(lbl)
+                fig.add_trace(go.Scatter(x=hrs, y=src[i, :T],
+                                         mode="lines+markers", name=lbl))
+            fig.update_layout(height=330, xaxis_title="hour",
+                              yaxis_title=what.split(" ")[1] + " (ft)",
+                              margin=dict(l=10, r=10, t=25, b=10),
+                              legend=dict(orientation="h", y=-0.3, x=0),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, key=f"insp_nh_{rec['id']}")
+    st.caption("Add any links or nodes to the plots — same values the Network-map "
+               "hover shows, as full time series. Pressure = head − elevation.")
+
+
+def _render_pump_curves(st, rec) -> None:
+    """EPANET-style pump curve H(q) = h0·ω² − r·q^v with the run's operating
+    points overlaid (colored by hour)."""
+    import plotly.graph_objects as go
+    pc = rec.get("pump_curve")
+    if not pc:
+        st.info("No pump-curve data for this run.")
+        return
+    sel = st.selectbox("Pump", pc["ids"], key=f"pc_sel_{rec['id']}")
+    p = pc["ids"].index(sel)
+    h0, r, v, qmax = pc["h0"][p], pc["r"][p], pc["v"][p], pc["maxf"][p]
+    q = np.linspace(0.0, 1.05 * qmax, 200)
+    fig = go.Figure()
+    speeds = [1.0]
+    if bool(pc["is_vsp"][p]) and pc["speed"] is not None:
+        on = pc["onoff"][p] > 0.5
+        used = sorted({round(float(s), 2) for s in pc["speed"][p][on]})
+        speeds = sorted(set([1.0] + used))
+    for om in speeds:
+        H = h0 * om ** 2 - r * q ** v
+        fig.add_trace(go.Scatter(x=q, y=np.maximum(H, 0), mode="lines",
+                                 name=f"curve ω={om:.2f}",
+                                 line=dict(dash="solid" if om == 1.0 else "dash")))
+    on = pc["onoff"][p] > 0.5
+    if on.any():
+        hrs = np.where(on)[0]
+        fig.add_trace(go.Scatter(
+            x=pc["q_op"][p][on], y=pc["H_op"][p][on], mode="markers+text",
+            text=[f"h{t}" for t in hrs], textposition="top center",
+            textfont=dict(size=9),
+            marker=dict(size=10, color=hrs, colorscale="Viridis",
+                        colorbar=dict(title="hour"), line=dict(color="white", width=1)),
+            name="operating points"))
+    fig.update_layout(height=430, xaxis_title="flow q (GPM)",
+                      yaxis_title="head gain H (ft)",
+                      title=f"Pump {sel}:  H = {h0:.1f}·ω² − {r:.3g}·q^{v:.2f}",
+                      margin=dict(l=10, r=10, t=45, b=10),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(fig, use_container_width=True, key=f"pc_fig_{rec['id']}")
+    st.caption("The EPANET-style characteristic curve. Each marker is one hour's "
+               "operating point (q, H) from the optimized solution — it must sit ON "
+               "the curve for the speed the pump ran at. VSPs show one dashed curve "
+               "per speed used: the affinity laws shift the curve down as ω falls.")
+
+
+def _render_constraints(st, rec) -> None:
+    """Teaching mode: per-iteration constraint residuals/margins with the math."""
+    from .constraint_view import iteration_report, evolution_figure
+    wdn = rec["teach_wdn"]
+    iterates = rec["iterates"]
+    st.markdown(f"**{len(iterates)} successive-linearization iterations recorded.** "
+                "Equalities report the worst |residual|; inequalities report the "
+                "worst violation (0 = satisfied). Watch the linearized physics "
+                "tighten as the algorithm relinearizes.")
+    st.plotly_chart(evolution_figure(wdn, iterates), use_container_width=True,
+                    key=f"cons_ev_{rec['id']}")
+    k = st.slider("Iteration", 0, len(iterates) - 1, len(iterates) - 1,
+                  key=f"cons_k_{rec['id']}")
+    snap = iterates[k]
+    st.caption(f"Iteration {k}: objective = {snap['obj']:.5f}, "
+               f"iterate change ‖Δ[H;Q;z]‖ = {snap['err']:.4f}"
+               + (f", max head-bound slack = {snap['slack']:.4g}" if snap.get("slack") else ""))
+    for row in iteration_report(wdn, snap):
+        c1, c2, c3 = st.columns([2.6, 1, 0.6])
+        with c1:
+            st.latex(row["latex"])
+        c2.metric(row["family"], f"{row['worst']:.3g}",
+                  help="worst |residual| (=) or worst violation (≤) across all "
+                       "elements and hours at this iteration")
+        c3.markdown("### " + ("✅" if row["ok"] else "⚠️"))
+    st.caption("Equalities are enforced **on the linearized physics**, so their "
+               "residuals here are measured against the *nonlinear* truth where "
+               "possible (pump power) or the iteration's own linearization (pipes) — "
+               "the gap that shrinks is exactly the successive-approximation error. "
+               "Inequalities (bounds, big-M gating) must hold at every iteration.")
+
+
 def _render_case(st, rec) -> None:
     case = rec["case"]
     if not case.converged and not np.isfinite(case.owf_cost):
@@ -125,7 +253,7 @@ def _render_case(st, rec) -> None:
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("EPANET cost (rules)", f"{case.epanet_cost:.4f}",
               help="EPANET's own tank-level rules — a DIFFERENT schedule; cost baseline only.")
-    c2.metric("C-OWPF cost", f"{case.owf_cost:.4f}", delta=f"{-case.savings_pct:.1f}%",
+    c2.metric("C-OWF cost", f"{case.owf_cost:.4f}", delta=f"{-case.savings_pct:.1f}%",
               delta_color="inverse", help="Optimized schedule, true nonlinear energy cost.")
     c3.metric("Max head error", f"{case.max_dhead:.3f} ft",
               help="SAME schedule imposed in EPANET and replayed.")
@@ -136,14 +264,27 @@ def _render_case(st, rec) -> None:
         st.caption(f"note: {case.note}")
 
     has_prv = rec.get("prv_fig") is not None
+    has_teach = rec.get("iterates") and rec.get("teach_wdn") is not None
     tab_names = ["Network map", "Flow animation", "Schedule", "Flows", "Heads",
                  "Convergence", "Error", "Solver log", "Download"]
+    # conditional tabs appended AFTER the fixed indices 0..8, order tracked below
+    idx = 9
     if has_prv:
-        # appended LAST so the fixed tab indices below (0..8) stay valid
-        tab_names.append("🔻 PRV")
+        tab_names.append("🔻 PRV"); prv_idx = idx; idx += 1
+    tab_names.append("🔎 Inspector"); insp_idx = idx; idx += 1
+    tab_names.append("📈 Pump curves"); curve_idx = idx; idx += 1
+    if has_teach:
+        tab_names.append("📐 Constraints"); cons_idx = idx; idx += 1
     tabs = st.tabs(tab_names)
+    with tabs[insp_idx]:
+        _render_inspector(st, rec)
+    with tabs[curve_idx]:
+        _render_pump_curves(st, rec)
+    if has_teach:
+        with tabs[cons_idx]:
+            _render_constraints(st, rec)
     if has_prv:
-        with tabs[9]:
+        with tabs[prv_idx]:
             st.plotly_chart(rec["prv_fig"], use_container_width=True,
                             key=f"prv_{rec['id']}")
             st.caption("Three-state PRV (closed / open / active): when **active** the "
@@ -259,19 +400,25 @@ def _controls(st):
             st.markdown("**[RULES]**"); st.code("\n".join(cr["RULES"]), language="text")
         if not cr["CONTROLS"] and not cr["RULES"]:
             st.caption("This network defines no explicit controls or rules.")
+    teach = st.checkbox("📐 Teaching mode — record every iteration",
+                        value=False, key="w_teach",
+                        help="Stores each successive-linearization iterate so the "
+                             "result gains a **Constraints** tab: watch how every "
+                             "equality residual and inequality margin evolves per "
+                             "iteration. Best on the small networks.")
     b1, b2 = st.columns([1, 1])
     run = b1.button("💧  Run water case", type="primary", use_container_width=True,
                     disabled=solver not in avail, key="w_run")
     if b2.button("Clear water history", use_container_width=True, key="w_clear"):
         st.session_state.water_records = []
         st.rerun()
-    return net, mode, price, solver, run, vsp, prv
+    return net, mode, price, solver, run, vsp, prv, teach
 
 
 def render_water(st) -> None:
     if "water_records" not in st.session_state:
         st.session_state.water_records = []
-    net, mode, price, solver, run, vsp, prv = _controls(st)
+    net, mode, price, solver, run, vsp, prv, teach = _controls(st)
     # PRV networks need the warmstart solve: a free-binary direct solve is
     # unreliable with valve binaries (the recommended mode for net 108).
     if prv and mode == "direct":
@@ -293,7 +440,8 @@ def render_water(st) -> None:
                     with contextlib.redirect_stdout(log_buf):
                         return run_case(net, mode, price, None, plot=True,
                                         outdir="outputs", verbose=True,
-                                        solver=solver, vsp=vsp, prv=prv)
+                                        solver=solver, vsp=vsp, prv=prv,
+                                        teach=teach)
                 (case, wdn, result), solver_log = _run_capturing_all(_job)
             except Exception as exc:
                 st.error(f"Case failed: {exc}")
@@ -327,6 +475,19 @@ def render_water(st) -> None:
                                         flows_rule=fl_r[: wdn.time].T)
                 except Exception:
                     prv_fig = None
+            # pump-curve data (H = h0 omega^2 - r q^v + the run's operating points)
+            pump_curve = None
+            if result is not None and result.flows is not None:
+                p = wdn.pump
+                pump_curve = dict(
+                    ids=[str(wdn.raw.link_name_id[i]) for i in wdn.raw.link_pump_index],
+                    h0=p.h0.copy(), r=p.r_m.copy(), v=p.v_m.copy(),
+                    maxf=p.max_flow.copy(), is_vsp=p.is_vsp.copy(),
+                    q_op=(wdn.M.Lambda @ result.flows[:, :wdn.time]),
+                    H_op=-((wdn.M.Lambda @ wdn.M.Pi.T) @ result.heads[:, :wdn.time]),
+                    onoff=np.round(result.onoff[:, :wdn.time]),
+                    speed=(None if result.speed is None
+                           else result.speed[:, :wdn.time]))
             st.session_state.water_records.append({
                 "id": run_id, "case": case,
                 # python-level prints + the C-level solver log (HiGHS/MOSEK
@@ -337,6 +498,12 @@ def render_water(st) -> None:
                 "plots": plots,
                 "map_data": extract_map_data(wdn, result),
                 "prv_fig": prv_fig,
+                "pump_curve": pump_curve,
+                # teaching mode: the iterate snapshots + the WDN they refer to
+                "iterates": (result.iterates if result is not None
+                             and getattr(result, "iterates", None) else None),
+                "teach_wdn": (wdn if teach and result is not None
+                              and getattr(result, "iterates", None) else None),
                 "exports": (_build_exports(case, wdn, result)
                             if result is not None and result.flows is not None else {}),
             })
@@ -354,6 +521,6 @@ def render_water(st) -> None:
     st.dataframe(df, use_container_width=True, hide_index=True)
     st.download_button("Download session table (CSV)", data=_csv_bytes(df.set_index("run")),
                        file_name="owf_session_comparison.csv", mime="text/csv", key="w_dlsess")
-    st.caption("**Cost** columns compare *different* schedules (EPANET rules vs C-OWPF). "
+    st.caption("**Cost** columns compare *different* schedules (EPANET rules vs C-OWF). "
                "**Replay** columns use the *same* schedule imposed back in EPANET — "
                "linearization fidelity, not the cost operating point.")

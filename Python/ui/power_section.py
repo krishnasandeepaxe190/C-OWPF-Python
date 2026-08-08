@@ -74,9 +74,11 @@ def render_power(st) -> None:
     horizon = 24                       # standalone feeder day; matched to pumps when coupling
     if couple:
         cc = st.columns([1, 2])
-        net = cc[0].selectbox("Water network", [8, 3, 11, 36, 97],
-                              format_func=lambda n: {8: "8-node", 3: "3-node", 11: "Net1",
-                                                     36: "Net2", 97: "Net3"}[n], key="pwr_net")
+        net = cc[0].selectbox("Water network", [8, 108, 3, 11, 36, 97, 126],
+                              format_func=lambda n: {8: "8-node", 108: "8-node+PRV",
+                                                     3: "3-node", 11: "Net1",
+                                                     36: "Net2", 97: "Net3",
+                                                     126: "BWSN (large)"}[n], key="pwr_net")
         try:
             ppump_kw, pump_ids, horizon = _epanet_pump_kw(net)
             cc[0].caption(f"OPF horizon matched to pump schedule: **{horizon} h**")
@@ -119,7 +121,8 @@ def render_power(st) -> None:
     st.session_state["pwr_result"] = dict(res=res, feeder=feeder, fmeta=fmeta,
                                           pump_buses=pump_buses, vmin=vmin, vmax=vmax,
                                           elapsed=elapsed,
-                                          prev_elapsed=prev.get("elapsed"))
+                                          prev_elapsed=prev.get("elapsed"),
+                                          pv_rating=pdn.pv_rating[pdn.pv_buses].copy())
     _render_power_result(st)
 
 
@@ -150,7 +153,42 @@ def _render_power_result(st) -> None:
     T = res.v_nl.shape[1]
     h0 = min(12, T - 1)
     tabs = st.tabs(["Feeder map", "Voltage profile", "Voltage heatmap",
-                    "PV reactive", "Loss", "Setpoints (CSV)"])
+                    "PV reactive", "Loss", "Setpoints (CSV)",
+                    "⚡ PV capacity", "🔎 Inspector"])
+    with tabs[6]:
+        if res.q_pv.size and R.get("pv_rating") is not None:
+            st.plotly_chart(
+                P.pv_capacity_animation(res.p_pv, res.q_pv, R["pv_rating"],
+                                        [f"bus {fmeta['orig_id'][b]}" for b in res.pv_buses]),
+                use_container_width=True, key="pwr_cap")
+            st.caption("▶ Play: per-hour inverter loading ‖(p,q)‖/S_max per PV site. "
+                       "At night p = 0, so the whole rating is reactive headroom; at "
+                       "solar peak the circle |q| ≤ √(S²−p²) leaves little room — "
+                       "that squeeze is exactly the inverter-capability constraint.")
+        else:
+            st.info("No PV sites active.")
+    with tabs[7]:
+        import plotly.graph_objects as go
+        bus_lbl = ["slack"] + [f"bus {fmeta['orig_id'][b]}" for b in range(fmeta["N"])]
+        sel = st.multiselect("Buses → V(t)", bus_lbl[1:], default=bus_lbl[1:2],
+                             key="pwr_insp_b")
+        if sel:
+            fig = go.Figure()
+            for lbl in sel:
+                b = bus_lbl.index(lbl) - 1
+                fig.add_trace(go.Scatter(x=list(range(T)), y=res.v_nl[b], mode="lines+markers",
+                                         name=f"{lbl} (Z-bus)"))
+                fig.add_trace(go.Scatter(x=list(range(T)), y=res.v_lin[b], mode="lines",
+                                         line=dict(dash="dot"), name=f"{lbl} (linear)"))
+            fig.add_hline(y=vmin, line_dash="dash", line_color="#d62728")
+            fig.add_hline(y=vmax, line_dash="dash", line_color="#d62728")
+            fig.update_layout(height=380, xaxis_title="hour", yaxis_title="|V| (pu)",
+                              legend=dict(orientation="h", y=-0.25, x=0),
+                              margin=dict(l=10, r=10, t=25, b=10),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, key="pwr_insp_fig")
+            st.caption("Solid = nonlinear Z-bus truth; dotted = the LinDistFlow value "
+                       "the OPF optimized on; red dashes = the voltage limits.")
     with tabs[0]:
         hr = st.slider("Hour", 0, T - 1, h0, key="pwr_map_hr")
         st.plotly_chart(P.feeder_map(fmeta, res.v_nl, hr, res.pv_buses,

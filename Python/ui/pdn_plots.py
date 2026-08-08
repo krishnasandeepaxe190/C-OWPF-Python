@@ -183,7 +183,10 @@ def loss_chart(loss_base_kw: np.ndarray, loss_opt_kw: np.ndarray):
 
 
 def coupled_network_map(water_md: dict, feeder: dict, pump_bus, pump_ids,
-                        pv_buses=None, valve_links=None):
+                        pv_buses=None, valve_links=None,
+                        show_node_labels: bool = True,
+                        show_bus_labels: bool = True,
+                        show_coupling_labels: bool = True):
     """Side-by-side depiction of the interconnected energy systems (paper Fig. 1
     style): the WDN on the left, the feeder on the right, and dashed pump->bus
     coupling lines (the Xi matrix) between them."""
@@ -226,7 +229,8 @@ def coupled_network_map(water_md: dict, feeder: dict, pump_bus, pump_ids,
         if not idx:
             continue
         fig.add_trace(go.Scatter(
-            x=wxn[idx], y=wyn[idx], mode="markers+text",
+            x=wxn[idx], y=wyn[idx],
+            mode="markers+text" if show_node_labels else "markers",
             marker=dict(symbol=sym[kind], size=13 if kind != "junction" else 10,
                         color=colr[kind], line=dict(color="white", width=1)),
             text=[water_md["node_id"][i] for i in idx], textposition="top center",
@@ -245,7 +249,8 @@ def coupled_network_map(water_md: dict, feeder: dict, pump_bus, pump_ids,
     lbl = [("slack" if g == 0 else str(orig[g - 1]) if orig is not None else str(g))
            for g in range(len(fxn))]
     fig.add_trace(go.Scatter(
-        x=fxn, y=fyn, mode="markers+text",
+        x=fxn, y=fyn,
+        mode="markers+text" if show_bus_labels else "markers",
         marker=dict(symbol="square", size=9, color="#b9781a",
                     line=dict(color="white", width=1)),
         text=lbl, textposition="bottom center", textfont=dict(size=9),
@@ -278,7 +283,8 @@ def coupled_network_map(water_md: dict, feeder: dict, pump_bus, pump_ids,
             showlegend=(p == 0)))
         pid = pump_ids[p] if pump_ids and p < len(pump_ids) else str(p)
         bus_lbl = (str(orig[int(b)]) if orig is not None else str(g))
-        fig.add_annotation(x=(mx + fxn[g]) / 2, y=(my + fyn[g]) / 2 + 0.03,
+        if show_coupling_labels:
+            fig.add_annotation(x=(mx + fxn[g]) / 2, y=(my + fyn[g]) / 2 + 0.03,
                            text=f"pump {pid} → bus {bus_lbl}", showarrow=False,
                            font=dict(size=10, color="#d62728"))
 
@@ -292,4 +298,60 @@ def coupled_network_map(water_md: dict, feeder: dict, pump_bus, pump_ids,
         yaxis=dict(visible=False, range=[0, 1.1]),
         legend=dict(orientation="h", y=-0.04, x=0),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
+def pv_capacity_animation(p_pv: np.ndarray, q_pv: np.ndarray, rating: np.ndarray,
+                          labels: list):
+    """Animated per-hour inverter loading: ||(p,q)|| / S_max per PV site.
+
+    One bar per site; ▶ Play steps through the hours. The 100% line is the
+    inverter apparent-power rating S -- the capability circle the OPF respects.
+    """
+    import plotly.graph_objects as go
+
+    T = p_pv.shape[1]
+    S = np.maximum(np.asarray(rating, float), 1e-9)[:, None]        # (npv,1)
+    util = 100.0 * np.sqrt(p_pv ** 2 + q_pv ** 2) / S               # (npv,T) %
+    qshare = 100.0 * np.abs(q_pv) / S
+    pshare = 100.0 * p_pv / S
+
+    def bars(t):
+        return [
+            go.Bar(x=labels, y=pshare[:, t], name="active |p|/S",
+                   marker_color="#e6c229"),
+            go.Bar(x=labels, y=qshare[:, t], name="reactive |q|/S",
+                   marker_color="#1f77b4"),
+            go.Scatter(x=labels, y=util[:, t], mode="markers+text",
+                       text=[f"{u:.0f}%" for u in util[:, t]],
+                       textposition="top center", textfont=dict(size=10),
+                       marker=dict(symbol="diamond", size=10, color="#d62728"),
+                       name="total ‖(p,q)‖/S"),
+        ]
+
+    fig = go.Figure(data=bars(0),
+                    frames=[go.Frame(data=bars(t), name=str(t)) for t in range(T)])
+    fig.add_hline(y=100.0, line_dash="dash", line_color="#d62728",
+                  annotation_text="S_max (100%)")
+    fig.update_layout(
+        height=440, barmode="group",
+        yaxis=dict(title="% of inverter rating S", range=[0, 130]),
+        legend=dict(orientation="h", y=1.12, x=0),
+        margin=dict(l=10, r=10, t=40, b=10),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        updatemenus=[dict(type="buttons", showactive=False, y=1.18, x=1.0,
+                          xanchor="right",
+                          buttons=[dict(label="▶ Play", method="animate",
+                                        args=[None, dict(frame=dict(duration=550,
+                                                                    redraw=True),
+                                                         fromcurrent=True)]),
+                                   dict(label="⏸", method="animate",
+                                        args=[[None], dict(frame=dict(duration=0),
+                                                           mode="immediate")])])],
+        sliders=[dict(steps=[dict(args=[[str(t)], dict(mode="immediate",
+                                                       frame=dict(duration=0,
+                                                                  redraw=True))],
+                                  label=f"h{t}", method="animate")
+                             for t in range(T)],
+                      currentvalue=dict(prefix="hour: "), y=-0.07)])
     return fig

@@ -74,6 +74,9 @@ class OWFResult:
     errors: list = field(default_factory=list)
     objectives: list = field(default_factory=list)
     max_slack: float = float("nan")   # max head-bound violation (soft_bounds only)
+    # Teaching mode (config.record_iterates): one dict per iteration with the
+    # variable values AND the linearization coefficients used for that solve.
+    iterates: list = field(default_factory=list)
 
 
 def _build_model(wdn: WDN) -> Model:
@@ -193,6 +196,7 @@ def solve_owf(
     prev_eps = eps_override if eps_override is not None else wdn.int_eps
     f_lin_prev = None
     errors, objectives = [], []
+    iterates = []
     status = "not_solved"
     heads = flows = onoff = ppump = speed = prv = None
     converged = False
@@ -258,6 +262,21 @@ def solve_owf(
             best_key = key
             best = (heads, flows, onoff, ppump, speed, prv, objectives[-1], max_slack)
 
+        if cfg.record_iterates:
+            # snapshot the variables AND the linearization THIS solve used (the
+            # params still hold this iteration's values -- captured before the
+            # relinearization below overwrites them)
+            iterates.append(dict(
+                heads=heads.copy(), flows=flows.copy(),
+                onoff=np.asarray(onoff, dtype=float).copy(),
+                speed=None if speed is None else speed.copy(),
+                ppump=ppump.copy(),
+                Cp=np.asarray(model.Cp.value).copy(),
+                C1M=np.asarray(model.C1M.value).copy(),
+                C2M=np.asarray(model.C2M.value).copy(),
+                err=err, obj=objectives[-1], slack=cur_slack,
+            ))
+
         if cfg.verbose:
             extra = f"  max_slack={cur_slack:.4g}" if soft else ""
             print(f"[iter {it}] obj={objectives[-1]:.6f}  error={err:.6f}"
@@ -309,4 +328,5 @@ def solve_owf(
         errors=errors,
         objectives=objectives,
         max_slack=max_slack,
+        iterates=iterates,
     )

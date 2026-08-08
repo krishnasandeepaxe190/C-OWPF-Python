@@ -2,7 +2,7 @@
 
 Run with no arguments for the **interactive** driver: it asks for the network,
 suggests the right solve mode, constructs the case, runs it, writes plots and
-prints an EPANET-vs-C-OWPF comparison table (plus an aggregate table when you
+prints an EPANET-vs-C-OWF comparison table (plus an aggregate table when you
 run several cases in one session).
 
     python main_owf.py
@@ -124,7 +124,8 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
              outdir: str, verbose: bool,
              solver: str = "HIGHS",
              vsp: dict = None,
-             prv: dict = None) -> tuple[Optional[CaseResult], object, object]:
+             prv: dict = None,
+             teach: bool = False) -> tuple[Optional[CaseResult], object, object]:
     """Construct and solve one case; returns (CaseResult, wdn, result).
 
     ``vsp`` maps a pump id to its (omega_min, omega_max) speed bounds; listed
@@ -163,6 +164,10 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
             cfgv = _warmstart_config(net, price, horizon, solver)
             cfgv.prv_settings = prv
             wdn = setup(cfgv)
+    if teach:
+        # teaching mode: record every successive-linearization iterate so the UI
+        # can show constraint residuals/margins per iteration
+        wdn.config.record_iterates = True
     print(f"  network: nodes={wdn.n_nodes} links={wdn.n_links} pumps={wdn.n_pumps} "
           f"tanks={wdn.n_tanks} horizon={wdn.time}h")
 
@@ -292,8 +297,8 @@ def run_case(net: int, mode: str, price: int, horizon, plot: bool,
 # Comparison table
 # ---------------------------------------------------------------------------
 def comparison_table(cases: list) -> str:
-    """EPANET(rules) vs C-OWPF comparison for one or more cases."""
-    head = (f"\n{'case':28s} {'EPANET(rules)':>13s} {'C-OWPF':>9s} {'saving':>8s} "
+    """EPANET(rules) vs C-OWF comparison for one or more cases."""
+    head = (f"\n{'case':28s} {'EPANET(rules)':>13s} {'C-OWF':>9s} {'saving':>8s} "
             f"{'dHead':>8s} {'dPumpQ':>8s} {'minP':>7s} {'feas':>5s} {'time':>6s}")
     sep = "-" * len(head)
     lines = [head, sep]
@@ -312,11 +317,11 @@ def comparison_table(cases: list) -> str:
     lines.append(sep)
     lines.append(
         "COST columns compare DIFFERENT schedules: EPANET(rules) = EPANET's own "
-        "tank-level rule operation vs C-OWPF's optimized schedule (true nonlinear "
+        "tank-level rule operation vs C-OWF's optimized schedule (true nonlinear "
         "energy cost); saving = % reduction.")
     lines.append(
-        "ERROR columns use the SAME schedule: the C-OWPF schedule is imposed in "
-        "EPANET and replayed -- dHead [ft] / dPumpQ [GPM] are max |C-OWPF - EPANET|; "
+        "ERROR columns use the SAME schedule: the C-OWF schedule is imposed in "
+        "EPANET and replayed -- dHead [ft] / dPumpQ [GPM] are max |C-OWF - EPANET|; "
         "minP = min junction pressure in that replay (>0 = hydraulically feasible).")
     return "\n".join(lines)
 

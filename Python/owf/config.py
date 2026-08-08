@@ -161,6 +161,10 @@ class SolverConfig:
     # Pin the VSP relative speeds to a given (Pu x T) array (used by the VSP polish:
     # with omega fixed, WW = omega*f is exact -- no McCormick gap). None -> free.
     fixed_speed: Optional["np.ndarray"] = None
+    # Teaching mode: record every successive-linearization iterate (variables +
+    # the linearization coefficients used for that solve) so the UI can show how
+    # each constraint family's residuals/margins evolve iteration by iteration.
+    record_iterates: bool = False
     soft_bounds: bool = False
     penalty_weight: float = 1.0e3
     penalty_growth: float = 2.0

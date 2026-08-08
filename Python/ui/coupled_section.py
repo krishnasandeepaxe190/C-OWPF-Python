@@ -206,7 +206,15 @@ def render_coupled(st) -> None:
         node_ids=[str(s) for s in wdn.raw.node_name_id],
         pump_ids=[str(wdn.raw.link_name_id[i]) for i in wdn.raw.link_pump_index],
         water_md=__import__("owf.netmap", fromlist=["extract_map_data"]).extract_map_data(wdn),
-        valve_link_ids=[str(wdn.raw.link_name_id[i]) for i in wdn.M.valve_index])
+        valve_link_ids=[str(wdn.raw.link_name_id[i]) for i in wdn.M.valve_index],
+        attrs=dict(
+            link=dict(id=[str(s) for s in wdn.raw.link_name_id],
+                      kind=[str(k) for k in wdn.raw.link_type],
+                      diameter_in=wdn.raw.link_diameter.tolist(),
+                      length_ft=wdn.raw.link_length.tolist(),
+                      roughness=wdn.raw.link_roughness.tolist()),
+            node=dict(id=[str(s) for s in wdn.raw.node_name_id],
+                      elevation_ft=wdn.raw.node_elevations.tolist())))
     _render_coupled_result(st)
 
 
@@ -254,6 +262,92 @@ def _render_solution_tables(st, res, R, prefix: str, title: str) -> None:
                        data=pd.DataFrame(res.heads[:, :T], index=node_ids,
                                          columns=hours).to_csv().encode(),
                        file_name=f"{prefix}_heads.csv", key=f"{prefix}_dl_h")
+
+
+def _render_coupled_inspector(st, cpl, val, R, fmeta) -> None:
+    """Pick feeder buses / lines / water elements and plot their time series:
+    V(t) linear vs Z-bus, line P(t) & Q(t), water flow(t) and head(t)."""
+    import plotly.graph_objects as go
+    from pdn import PDN
+    from pdn.lindistflow import branch_flow_matrix
+    T = cpl.voltage.shape[1]
+    hrs = list(range(T))
+    c1, c2 = st.columns(2)
+    with c1:
+        bus_lbl = [f"bus {fmeta['orig_id'][b]}" for b in range(fmeta["N"])]
+        sel_b = st.multiselect("Feeder buses → V(t)", bus_lbl, default=bus_lbl[:1],
+                               key="cpl_insp_b")
+        if sel_b:
+            fig = go.Figure()
+            for lbl in sel_b:
+                b = bus_lbl.index(lbl)
+                fig.add_trace(go.Scatter(x=hrs, y=val.v_nl[b], mode="lines+markers",
+                                         name=f"{lbl} (Z-bus)"))
+                fig.add_trace(go.Scatter(x=hrs, y=cpl.voltage[b], mode="lines",
+                                         line=dict(dash="dot"), name=f"{lbl} (linear)"))
+            fig.add_hline(y=R["vmin"], line_dash="dash", line_color="#d62728")
+            fig.update_layout(height=330, xaxis_title="hour", yaxis_title="|V| (pu)",
+                              legend=dict(orientation="h", y=-0.3, x=0),
+                              margin=dict(l=10, r=10, t=25, b=10),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, key="cpl_insp_vfig")
+        # line P/Q from the subtree matrix: line n carries everything below bus n
+        line_lbl = [f"line → bus {fmeta['orig_id'][b]}" for b in range(fmeta["N"])]
+        sel_ln = st.multiselect("Feeder lines → P(t), Q(t)", line_lbl,
+                                default=line_lbl[:1], key="cpl_insp_ln")
+        if sel_ln and cpl.p_net.size:
+            m = PDN.build(R["feeder"]).model
+            Tmat = branch_flow_matrix(m)
+            from pdn.feeders import FEEDERS as _F
+            skw = _F[R["feeder"]]["SBase"] / 1000.0
+            Pb = Tmat @ cpl.p_net * skw
+            Qb = Tmat @ cpl.q_net * skw
+            fig = go.Figure()
+            for lbl in sel_ln:
+                b = line_lbl.index(lbl)
+                fig.add_trace(go.Scatter(x=hrs, y=Pb[b], mode="lines+markers",
+                                         name=f"{lbl} P (kW)"))
+                fig.add_trace(go.Scatter(x=hrs, y=Qb[b], mode="lines",
+                                         line=dict(dash="dash"),
+                                         name=f"{lbl} Q (kVAr)"))
+            fig.update_layout(height=330, xaxis_title="hour",
+                              yaxis_title="line flow (kW / kVAr)",
+                              legend=dict(orientation="h", y=-0.3, x=0),
+                              margin=dict(l=10, r=10, t=25, b=10),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, key="cpl_insp_pqfig")
+    with c2:
+        link_ids = R.get("link_ids") or []
+        node_ids = R.get("node_ids") or []
+        sel_l = st.multiselect("Water links → flow (GPM)", link_ids,
+                               default=(R.get("pump_ids") or [])[:1], key="cpl_insp_wl")
+        if sel_l and cpl.flows is not None and cpl.flows.size:
+            fig = go.Figure()
+            for lbl in sel_l:
+                i = link_ids.index(lbl)
+                fig.add_trace(go.Scatter(x=hrs, y=cpl.flows[i, :T],
+                                         mode="lines+markers", name=f"link {lbl}"))
+            fig.update_layout(height=330, xaxis_title="hour", yaxis_title="flow (GPM)",
+                              legend=dict(orientation="h", y=-0.3, x=0),
+                              margin=dict(l=10, r=10, t=25, b=10),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, key="cpl_insp_wffig")
+        sel_n = st.multiselect("Water nodes → head (ft)", node_ids, default=[],
+                               key="cpl_insp_wn")
+        if sel_n and cpl.heads is not None and cpl.heads.size:
+            fig = go.Figure()
+            for lbl in sel_n:
+                i = node_ids.index(lbl)
+                fig.add_trace(go.Scatter(x=hrs, y=cpl.heads[i, :T],
+                                         mode="lines+markers", name=f"node {lbl}"))
+            fig.update_layout(height=330, xaxis_title="hour", yaxis_title="head (ft)",
+                              legend=dict(orientation="h", y=-0.3, x=0),
+                              margin=dict(l=10, r=10, t=25, b=10),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True, key="cpl_insp_whfig")
+    st.caption("Both systems, one inspector: feeder V(t) (linear vs Z-bus truth), "
+               "line active/reactive flows, water flows and heads — pick any elements "
+               "and compare across the coupling.")
 
 
 def _render_coupled_result(st) -> None:
@@ -314,22 +408,50 @@ def _render_coupled_result(st) -> None:
     T = cpl.voltage.shape[1]
     h0 = min(12, T - 1)
     tab_names = ["🔗 Coupling map", "Feeder map", "Voltage profile", "Pump schedule",
-                 "PV reactive", "Search trace", "Decoupled solution"]
+                 "PV reactive", "Search trace", "Decoupled solution", "🔎 Inspector"]
     if R.get("prv_fig") is not None:
         tab_names.append("PRV")
     tabs = st.tabs(tab_names)
     with tabs[0]:
         if R.get("water_md") is not None:
+            o1, o2, o3 = st.columns(3)
+            show_n = o1.checkbox("Node labels", value=False, key="cpl_map_nlab")
+            show_b = o2.checkbox("Bus labels", value=False, key="cpl_map_blab")
+            show_c = o3.checkbox("Coupling labels", value=False, key="cpl_map_clab")
             st.plotly_chart(
                 P.coupled_network_map(R["water_md"], fmeta, R["pump_bus"],
                                       R.get("pump_ids"), R.get("pv_buses"),
-                                      R.get("valve_link_ids")),
+                                      R.get("valve_link_ids"),
+                                      show_node_labels=show_n,
+                                      show_bus_labels=show_b,
+                                      show_coupling_labels=show_c),
                 use_container_width=True, key="cpl_couplemap")
             st.caption("The interdependent energy systems: pumps (red links) in the "
                        "water network draw their electrical power from the feeder "
                        "buses they connect to (dashed red = the Ξ coupling). PRVs are "
-                       "purple; PV inverters are stars. This is the connection the "
-                       "C-OWPF co-optimizes across.")
+                       "purple; PV inverters are stars. Hover any element for its id; "
+                       "toggle the label checkboxes to annotate the figure.")
+            attrs = R.get("attrs")
+            if attrs:
+                with st.expander("🗂 Element attributes (nodes & sections)"):
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        ln = st.selectbox("Section (link)", attrs["link"]["id"],
+                                          key="cpl_attr_l")
+                        i = attrs["link"]["id"].index(ln)
+                        st.table(pd.DataFrame({
+                            "attribute": ["kind", "diameter (in)", "length (ft)",
+                                          "roughness C"],
+                            "value": [attrs["link"]["kind"][i],
+                                      attrs["link"]["diameter_in"][i],
+                                      attrs["link"]["length_ft"][i],
+                                      attrs["link"]["roughness"][i]]}))
+                    with a2:
+                        nd = st.selectbox("Node", attrs["node"]["id"], key="cpl_attr_n")
+                        j = attrs["node"]["id"].index(nd)
+                        st.table(pd.DataFrame({
+                            "attribute": ["elevation (ft)"],
+                            "value": [attrs["node"]["elevation_ft"][j]]}))
         else:
             st.info("Re-run the case to build the coupling map.")
     tabs = list(tabs)[1:]     # drop the map tab so the code below keeps indices 0..5
@@ -337,6 +459,8 @@ def _render_coupled_result(st) -> None:
     with tabs[5]:
         _render_solution_tables(st, dec, R, prefix="dec",
                                 title="Decoupled (water-only) solution")
+    with tabs[6]:
+        _render_coupled_inspector(st, cpl, val, R, fmeta)
     if R.get("prv_fig") is not None:
         with tabs[-1]:
             st.plotly_chart(R["prv_fig"], use_container_width=True, key="cpl_prv_fig")
