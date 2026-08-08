@@ -29,34 +29,9 @@ def _csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv().encode()
 
 
-def _run_capturing_all(fn):
-    """Run ``fn`` while capturing BOTH Python-level stdout and the C-level fd 1/2.
-
-    HiGHS/MOSEK/EPANET are C libraries that write their logs (presolve, primal/
-    dual simplex, branch-and-bound) straight to file descriptor 1 -- invisible to
-    ``contextlib.redirect_stdout``. Temporarily point fd 1 and 2 into a temp file
-    so the full solver log is captured. Returns (fn_result, captured_text).
-    """
-    fd_out, fd_err = os.dup(1), os.dup(2)
-    tmp = tempfile.TemporaryFile(mode="w+b")
-    try:
-        os.dup2(tmp.fileno(), 1)
-        os.dup2(tmp.fileno(), 2)
-        try:
-            result = fn()
-        finally:
-            try:
-                import sys
-                sys.stdout.flush(); sys.stderr.flush()
-            except Exception:
-                pass
-            os.dup2(fd_out, 1)
-            os.dup2(fd_err, 2)
-        tmp.flush(); tmp.seek(0)
-        text = tmp.read().decode("utf-8", "ignore")
-    finally:
-        os.close(fd_out); os.close(fd_err); tmp.close()
-    return result, text
+# fd-level capture shared by the Water / Power / Coupled tabs (HiGHS, MOSEK and
+# EPANET write their logs to C-level stdout, invisible to redirect_stdout)
+from .capture import run_capturing_all as _run_capturing_all
 
 
 @_st.cache_data(show_spinner=False)

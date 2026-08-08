@@ -181,18 +181,23 @@ def render_power(st) -> None:
     if not (couple and pump_buses.size and pump_sets):
         pump_sets = {"(no pump load)": None}
 
-    # one OPF per handed-off schedule (two when the water operator sent both)
+    # one OPF per handed-off schedule (two when the water operator sent both);
+    # fd-level capture grabs the solver's own log (HiGHS/MOSEK write to C stdout)
+    from .capture import capture_fds
     runs = {}
     with st.spinner(f"Solving reactive OPF on {fmeta['label']} over {horizon} h "
                     f"x {len(pump_sets)} schedule(s) + Z-bus verification..."):
-        for lbl, pk in pump_sets.items():
-            pump_load = (pump_load_to_bus(pdn, pk, pump_buses)
-                         if pk is not None and pump_buses.size else None)
-            t0 = _time.time()
-            r = solve_pdn_opf(pdn, T=horizon, pump_load_pu=pump_load,
-                              load_shape=load_shape, vmin=vmin, vmax=vmax,
-                              solver=solver)
-            runs[lbl] = (r, _time.time() - t0)
+        with capture_fds() as cap:
+            for lbl, pk in pump_sets.items():
+                print(f"\n{'=' * 70}\n OPF for schedule: {lbl}\n{'=' * 70}")
+                pump_load = (pump_load_to_bus(pdn, pk, pump_buses)
+                             if pk is not None and pump_buses.size else None)
+                t0 = _time.time()
+                r = solve_pdn_opf(pdn, T=horizon, pump_load_pu=pump_load,
+                                  load_shape=load_shape, vmin=vmin, vmax=vmax,
+                                  solver=solver, verbose=True)
+                runs[lbl] = (r, _time.time() - t0)
+    solver_log = cap["text"][-400_000:]
 
     primary = ("C-OWF optimized" if "C-OWF optimized" in runs else list(runs)[-1])
     res, elapsed = runs[primary]
@@ -203,7 +208,7 @@ def render_power(st) -> None:
     st.session_state["pwr_result"] = dict(res=res, feeder=feeder, fmeta=fmeta,
                                           pump_buses=pump_buses, vmin=vmin, vmax=vmax,
                                           elapsed=elapsed, compare=compare,
-                                          primary=primary,
+                                          primary=primary, solver_log=solver_log,
                                           prev_elapsed=prev.get("elapsed"),
                                           pv_rating=pdn.pv_rating[pdn.pv_buses].copy())
     _render_power_result(st)
@@ -267,7 +272,7 @@ def _render_power_result(st) -> None:
     h0 = min(12, T - 1)
     tabs = st.tabs(["Feeder map", "Voltage profile", "Voltage heatmap",
                     "PV reactive", "Loss", "Setpoints (CSV)",
-                    "⚡ PV capacity", "🔎 Inspector"])
+                    "⚡ PV capacity", "🔎 Inspector", "🖥 Solver log"])
     with tabs[6]:
         if res.q_pv.size and R.get("pv_rating") is not None:
             st.plotly_chart(
@@ -302,6 +307,12 @@ def _render_power_result(st) -> None:
             st.plotly_chart(fig, use_container_width=True, key="pwr_insp_fig")
             st.caption("Solid = nonlinear Z-bus truth; dotted = the LinDistFlow value "
                        "the OPF optimized on; red dashes = the voltage limits.")
+    with tabs[8]:
+        st.code(R.get("solver_log") or "(no solver log captured — re-run the OPF)",
+                language="text")
+        st.caption("Full solver output for every OPF solved in this run (one block "
+                   "per handed-off schedule): CVXPY compilation, HiGHS/MOSEK "
+                   "presolve and primal-dual iterations.")
     with tabs[0]:
         hr = st.slider("Hour", 0, T - 1, h0, key="pwr_map_hr")
         st.plotly_chart(P.feeder_map(fmeta, res.v_nl, hr, res.pv_buses,

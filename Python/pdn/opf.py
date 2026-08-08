@@ -71,7 +71,7 @@ def solve_pdn_opf(pdn: PDN, T: int, pump_load_pu: np.ndarray | None = None,
                   load_shape: np.ndarray | None = None, vmin: float = 0.95,
                   vmax: float = 1.05, soft_voltage: bool = True,
                   voltage_penalty: float = 1.0e4,
-                  solver: str = "HIGHS") -> PDNOPFResult:
+                  solver: str = "HIGHS", verbose: bool = False) -> PDNOPFResult:
     """Dispatch PV reactive to hold voltage, then verify with the nonlinear Z-bus."""
     from .feeders import FEEDERS
     SBase = float(FEEDERS[pdn.key]["SBase"])
@@ -118,9 +118,11 @@ def solve_pdn_opf(pdn: PDN, T: int, pump_load_pu: np.ndarray | None = None,
         obj = obj + cp.sum(cp.abs(q_net))                   # local reactive compensation
 
     prob = cp.Problem(cp.Minimize(obj), cons)
+    if verbose:
+        print(f"[pdn-opf] {pdn.key}: T={T}h, solver={solver}")
     for s in (solver, "SCIP", "CLARABEL", "SCS"):
         try:
-            prob.solve(solver=s)
+            prob.solve(solver=s, verbose=verbose)
             if prob.status in ("optimal", "optimal_inaccurate"):
                 break
         except Exception:

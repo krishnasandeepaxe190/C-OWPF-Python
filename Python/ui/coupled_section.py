@@ -145,8 +145,13 @@ def render_coupled(st) -> None:
                        vsp_pumps=vsp, prv_settings=prv)
     eta = ("~1 min" if (net == 97 and feeder in ("sb128", "sce56")) else
            "up to a minute" if heavy else "a few seconds")
-    with st.spinner(f"Solving decoupled and coupled ({effort} search, {eta}, {solver})..."):
+    from .capture import capture_fds
+    with st.spinner(f"Solving decoupled and coupled ({effort} search, {eta}, {solver})..."), \
+         capture_fds() as cap:
         wdn, pdn = setup_coupled(net, cc, time=24, price_choice=price, solver=solver)
+        # verbose: per-iteration lines + the solver's own primal-dual log, all
+        # captured at fd level for the Solver-log tab
+        wdn.config.verbose = True
         pdn.limit_pv(pv_count)
 
         # --- decoupled: water schedule, then imposed on the feeder --------------
@@ -173,7 +178,7 @@ def render_coupled(st) -> None:
         t_dec = t_owf if t_owf is not None else t_rules
 
         # --- coupled: voltage-aware joint schedule search ----------------------
-        opt_kw = dict(verbose=False, inner_iter=8 if fast else 15,
+        opt_kw = dict(verbose=True, inner_iter=8 if fast else 15,
                       polish=not fast, max_flips=6 if fast else 20, use_milp=not fast)
         if fast and heavy:
             # minimal candidate set on big networks: the tank-safe load-shift plus
@@ -212,6 +217,7 @@ def render_coupled(st) -> None:
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
         dec_rules=dec_rules, dec_owf=dec_owf, t_rules=t_rules, t_owf=t_owf,
         rules_loss=rules_loss, owf_loss=owf_loss,
+        solver_log=cap["text"][-400_000:],
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
         pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss,
         prv_fig=prv_fig, t_dec=t_dec, t_cpl=t_cpl,
@@ -449,7 +455,8 @@ def _render_coupled_result(st) -> None:
     T = cpl.voltage.shape[1]
     h0 = min(12, T - 1)
     tab_names = ["🔗 Coupling map", "Feeder map", "Voltage profile", "Pump schedule",
-                 "PV reactive", "Search trace", "Decoupled solution", "🔎 Inspector"]
+                 "PV reactive", "Search trace", "Decoupled solution", "🔎 Inspector",
+                 "🖥 Solver log"]
     if R.get("prv_fig") is not None:
         tab_names.append("PRV")
     tabs = st.tabs(tab_names)
@@ -502,6 +509,14 @@ def _render_coupled_result(st) -> None:
                                 title="Decoupled (water-only) solution")
     with tabs[6]:
         _render_coupled_inspector(st, cpl, val, R, fmeta)
+    with tabs[7]:
+        st.code(R.get("solver_log") or "(no solver log captured — re-run the case)",
+                language="text")
+        st.caption("Everything the coupled pipeline printed: EPANET setup, the "
+                   "decoupled fixed-schedule solves, every schedule-search candidate "
+                   "([coupled-opt] lines), and the solver's own presolve / primal-dual "
+                   "/ branch-and-bound output (HiGHS/MOSEK/SCIP). Tail-truncated to "
+                   "400 kB.")
     if R.get("prv_fig") is not None:
         with tabs[-1]:
             st.plotly_chart(R["prv_fig"], use_container_width=True, key="cpl_prv_fig")
