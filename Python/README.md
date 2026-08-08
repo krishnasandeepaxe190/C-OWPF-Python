@@ -102,6 +102,45 @@ Notes:
 - MOSEK/Gurobi stay unavailable in the cloud unless you add their packages **and**
   a license; HiGHS/SCIP need neither.
 
+## Commercial solvers locally (MOSEK / Gurobi academic licenses)
+
+Running locally — e.g. by double-clicking **`run_ui.bat`** — the app can use MOSEK
+and Gurobi in addition to the bundled HiGHS/SCIP. Both offer **free academic
+licenses**. Nothing in the app needs configuring: the solver dropdowns in the
+**Water** and **Coupled** tabs detect installed solvers automatically and show
+missing ones greyed out as *"(not installed)"*.
+
+**MOSEK** (personal academic license — user-locked, works on all your machines):
+1. `pip install Mosek` (once; deliberately not in `requirements.txt` so the
+   cloud deploy doesn't advertise a solver it can't license).
+2. Request the license at mosek.com → *Academic Licenses* with your university
+   email; they email you a `mosek.lic`.
+3. Put the file in **either** place — both work:
+   - `mosek.lic` at the **repo root** (next to this `Python/` folder). It is
+     git-ignored (`*.lic`) and Docker-ignored, so it can never be committed or
+     baked into an image; `owf/config.py` points `MOSEKLM_LICENSE_FILE` at it
+     automatically, or
+   - MOSEK's default `C:\Users\<you>\mosek\mosek.lic`.
+   > Gotcha: an **old expired copy in `~\mosek\`** silently shadows a newer one
+   > and fails with `err_license_version` — refresh both copies on renewal. The
+   > license major version must match the pip package (`Mosek` 11.x ↔ v11 lic).
+
+**Gurobi** (named-user academic license — machine-locked, one per machine):
+1. `pip install gurobipy` (once).
+2. portal.gurobi.com → *Licenses → Request → Named-User Academic* (free); needs
+   a campus network or university VPN at activation time.
+3. `grbgetkey <your-key>` on the machine that will run the app. It writes
+   `gurobi.lic` to your home directory (Gurobi's default search path). A copy at
+   the **repo root** also works (`GRB_LICENSE_FILE` is pointed at it, same
+   git/Docker-ignore protection as MOSEK).
+
+**Then just launch as usual** — `run_ui.bat` (or `streamlit run app.py`): the
+bat file installs `requirements.txt` on first run, starts the app on
+`http://localhost:8501`, and the dropdowns un-grey MOSEK/GUROBI. Pick one and
+every MILP/LP step of that run uses it, with automatic fallback to the bundled
+solvers if a solve errors. Cross-check: the 8-node case gives the **same cost on
+HiGHS and MOSEK (0.27474)** — a good first sanity test after installing.
+
 ## Web UI (`streamlit run app.py`)
 
 Five tabs, plus a **System / Light / Dark** appearance toggle:

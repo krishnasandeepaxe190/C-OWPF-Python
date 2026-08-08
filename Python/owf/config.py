@@ -13,13 +13,18 @@ from typing import Optional, List
 # Repository-relative data directory (Python/data/...).
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-# MOSEK license: if a (git-ignored) mosek.lic sits at the repo root, point MOSEK
-# at it unless the user already set MOSEKLM_LICENSE_FILE. MOSEK also finds
-# ~/mosek/mosek.lic on its own; this just makes the repo copy work everywhere.
+# Solver licenses: if a (git-ignored) mosek.lic / gurobi.lic sits at the repo
+# root, point the solver at it unless the user already set the env var. Both
+# solvers also find their vendor-default locations on their own (~/mosek/,
+# home-dir gurobi.lic); this just makes a repo-local copy work everywhere.
 import os as _os
-_MOSEK_LIC = Path(__file__).resolve().parent.parent.parent / "mosek.lic"
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_MOSEK_LIC = _REPO_ROOT / "mosek.lic"
 if _MOSEK_LIC.exists():
     _os.environ.setdefault("MOSEKLM_LICENSE_FILE", str(_MOSEK_LIC))
+_GUROBI_LIC = _REPO_ROOT / "gurobi.lic"
+if _GUROBI_LIC.exists():
+    _os.environ.setdefault("GRB_LICENSE_FILE", str(_GUROBI_LIC))
 
 # Pump power coefficient  c_m = 0.7457 / (3960 * eff),  eff = 0.81  [kW per (gpm*ft)]
 # 0.7457 converts hp -> kW; 3960 converts gpm*ft -> hp.
