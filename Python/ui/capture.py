@@ -10,9 +10,35 @@ from __future__ import annotations
 
 import contextlib
 import io
+import logging
 import os
 import sys
 import tempfile
+
+
+def _retarget_log_handlers(new_stream, old_streams):
+    """Point plain logging StreamHandlers at ``new_stream`` for the capture.
+
+    CVXPY's MOSEK interface emits the solver log via ``logging`` (not stdout).
+    Those handlers hold a reference to the ORIGINAL console stream, which under
+    a served app (run_ui.bat) can have an invalid Windows handle -- every MOSEK
+    line then dumps an "OSError: [WinError 6]" logging-error traceback. Retarget
+    them into the captured stream (so MOSEK logs land in the Solver-log tab) and
+    return the originals for restoration. FileHandlers are left untouched.
+    """
+    changed = []
+    names = list(getattr(logging.root.manager, "loggerDict", {}))
+    for lg in [logging.getLogger()] + [logging.getLogger(n) for n in names]:
+        for h in list(getattr(lg, "handlers", [])):
+            if (isinstance(h, logging.StreamHandler)
+                    and not isinstance(h, logging.FileHandler)
+                    and getattr(h, "stream", None) in old_streams):
+                changed.append((h, h.stream))
+                try:
+                    h.setStream(new_stream)
+                except Exception:
+                    h.stream = new_stream
+    return changed
 
 
 @contextlib.contextmanager
@@ -43,10 +69,24 @@ def capture_fds():
     new_stderr = io.TextIOWrapper(os.fdopen(os.dup(2), "wb"), encoding="utf-8",
                                   errors="replace", line_buffering=True)
     sys.stdout, sys.stderr = new_stdout, new_stderr
+    # CVXPY/MOSEK log via `logging`, whose handlers still point at the original
+    # (possibly invalid) console stream -- retarget them into the capture, and
+    # silence logging's own error dumps for anything we could not retarget.
+    old_streams = {old_stdout, old_stderr, sys.__stdout__, sys.__stderr__}
+    old_streams.discard(None)
+    retargeted = _retarget_log_handlers(new_stderr, old_streams)
+    old_raise = logging.raiseExceptions
+    logging.raiseExceptions = False
     out = {"text": ""}
     try:
         yield out
     finally:
+        for h, s0 in retargeted:
+            try:
+                h.setStream(s0)
+            except Exception:
+                h.stream = s0
+        logging.raiseExceptions = old_raise
         for s in (new_stdout, new_stderr):
             try:
                 s.flush()

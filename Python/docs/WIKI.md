@@ -89,6 +89,14 @@ the full trust-region MILP could be re-enabled on large nets (untested).
   over the captured fds for the duration of the block (restored after), so any
   print — ours or a library's — is safe and lands in the log. Never `print`
   in UI code outside a capture block; use `st.*` elements instead.
+- **MOSEK logs via Python `logging`, not stdout.** CVXPY's MOSEK interface
+  routes the solver log through `logging` handlers that hold a reference to the
+  ORIGINAL console stream — under run_ui.bat that handle can be invalid, so
+  every MOSEK line dumped an `OSError: [WinError 6]` "--- Logging error ---"
+  traceback wall (the solve itself still succeeded). `capture_fds` now also
+  retargets plain StreamHandlers bound to the original stdio into the captured
+  stream (restored after) and sets `logging.raiseExceptions = False` for the
+  block — MOSEK's interior-point log lands in the Solver-log tab like HiGHS's.
 
 ### Windows / OneDrive / LaTeX
 - OneDrive **online-only placeholder files** read as *Permission denied* /
