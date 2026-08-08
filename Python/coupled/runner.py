@@ -24,9 +24,13 @@ from .coupled_lp import solve_coupled, CoupledResult
 def setup(net_num: int, cc: CoupledConfig, time: Optional[int] = None,
           price_choice: int = 1, solver: str = "HIGHS") -> tuple[WDN, PDN]:
     """Build the water network and the distribution feeder for a coupled run."""
+    # Fallbacks mirror main_owf: try the bundled solvers that are NOT the primary.
+    from owf.config import DEFAULT_SOLVER, DEFAULT_FALLBACK, available_solvers
+    fallbacks = tuple(s for s in (DEFAULT_SOLVER, DEFAULT_FALLBACK)
+                      if s != solver and s in available_solvers())
     wcfg = SolverConfig(net_num=net_num, time=time, price_choice=price_choice,
-                        solver=solver, vsp_pumps=cc.vsp_pumps,
-                        prv_settings=cc.prv_settings)
+                        solver=solver, fallback_solvers=fallbacks,
+                        vsp_pumps=cc.vsp_pumps, prv_settings=cc.prv_settings)
     wdn = setup_wdn(wcfg)
     pdn = PDN.build(cc.feeder, pv_sizing=cc.pv_sizing, vmin=cc.vmin, vmax=cc.vmax)
     return wdn, pdn

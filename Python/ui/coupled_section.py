@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import streamlit as _st
 
+from owf.config import (DEFAULT_SOLVER, SOLVER_CHOICES, available_solvers)
 from pdn import FEEDERS, PDN
 from coupled import (setup as setup_coupled, CoupledConfig, solve_coupled_schedule,
                      solve_coupled_epanet, optimize_coupled_schedule, validate_coupled,
@@ -119,7 +120,17 @@ def render_coupled(st) -> None:
             st.info(f"VSP active on {len(vsp)} pump(s); both the decoupled and coupled "
                     f"solves co-optimize pump speed.")
 
-    run = st.button("🔗  Run coupled vs decoupled", type="primary", key="cpl_run")
+    rs = st.columns([1, 3])
+    avail = available_solvers()
+    solver = rs[0].selectbox("MILP solver", SOLVER_CHOICES,
+                             index=SOLVER_CHOICES.index(DEFAULT_SOLVER),
+                             format_func=lambda s: s + ("" if s in avail else " (not installed)"),
+                             key="cpl_solver",
+                             help="Solver for every coupled/decoupled MILP-LP step. "
+                                  "HiGHS is the bundled default; MOSEK/Gurobi need a license.")
+
+    run = st.button("🔗  Run coupled vs decoupled", type="primary", key="cpl_run",
+                    disabled=solver not in avail)
     if not run:
         st.info("Set the water net, feeder and DER, then **Run coupled vs decoupled**.")
         if st.session_state.get("cpl_result"):
@@ -132,8 +143,8 @@ def render_coupled(st) -> None:
                        vsp_pumps=vsp, prv_settings=prv)
     eta = ("~1 min" if (net == 97 and feeder in ("sb128", "sce56")) else
            "up to a minute" if heavy else "a few seconds")
-    with st.spinner(f"Solving decoupled and coupled ({effort} search, {eta})..."):
-        wdn, pdn = setup_coupled(net, cc, time=24, price_choice=price)
+    with st.spinner(f"Solving decoupled and coupled ({effort} search, {eta}, {solver})..."):
+        wdn, pdn = setup_coupled(net, cc, time=24, price_choice=price, solver=solver)
         pdn.limit_pv(pv_count)
 
         # --- decoupled: water schedule, then imposed on the feeder --------------
@@ -184,8 +195,59 @@ def render_coupled(st) -> None:
         dec=dec, cpl=cpl, cpl_info=cpl_info, val=val, fmeta=fmeta, feeder=feeder,
         pump_bus=np.asarray(pump_bus), vmin=vmin, vmax=vmax,
         pv_buses=pdn.pv_buses, dec_loss=dec_loss, cpl_loss=cpl_loss,
-        prv_fig=prv_fig)
+        prv_fig=prv_fig,
+        link_ids=[str(s) for s in wdn.raw.link_name_id],
+        node_ids=[str(s) for s in wdn.raw.node_name_id],
+        pump_ids=[str(wdn.raw.link_name_id[i]) for i in wdn.raw.link_pump_index],
+        water_md=__import__("owf.netmap", fromlist=["extract_map_data"]).extract_map_data(wdn),
+        valve_link_ids=[str(wdn.raw.link_name_id[i]) for i in wdn.M.valve_index])
     _render_coupled_result(st)
+
+
+def _render_solution_tables(st, res, R, prefix: str, title: str) -> None:
+    """Full decision variables of one solution: schedule (with speeds), pump power,
+    flows and heads -- as labeled tables with CSV downloads."""
+    T = res.onoff.shape[1] if res.onoff is not None and res.onoff.size else 0
+    if not T:
+        st.info("No solution stored.")
+        return
+    hours = [f"h{t}" for t in range(T)]
+    pump_ids = R.get("pump_ids") or [f"pump {i}" for i in range(res.onoff.shape[0])]
+    link_ids = R.get("link_ids") or [f"link {i}" for i in range(res.flows.shape[0])]
+    node_ids = R.get("node_ids") or [f"node {i}" for i in range(res.heads.shape[0])]
+    st.markdown(f"**{title}**")
+    sched = np.round(res.onoff)
+    if getattr(res, "speed", None) is not None:
+        sch = pd.DataFrame(np.round(sched * res.speed[:, :T], 2),
+                           index=pump_ids, columns=hours)
+        st.caption("Pump schedule — cell = relative speed ω while running (0 = off).")
+    else:
+        sch = pd.DataFrame(sched.astype(int), index=pump_ids, columns=hours)
+        st.caption("Pump on/off schedule (1 = on).")
+    st.dataframe(sch, use_container_width=True)
+    with st.expander("Pump electrical power (kW, true nonlinear)"):
+        st.dataframe(pd.DataFrame(np.round(res.ppump_true[:, :T], 2),
+                                  index=pump_ids, columns=hours),
+                     use_container_width=True)
+    with st.expander(f"Flows (GPM) — {len(link_ids)} links × {T} h"):
+        st.dataframe(pd.DataFrame(np.round(res.flows[:, :T], 1),
+                                  index=link_ids, columns=hours),
+                     use_container_width=True)
+    with st.expander(f"Heads (ft) — {len(node_ids)} nodes × {T} h"):
+        st.dataframe(pd.DataFrame(np.round(res.heads[:, :T], 2),
+                                  index=node_ids, columns=hours),
+                     use_container_width=True)
+    c1, c2, c3 = st.columns(3)
+    c1.download_button("⬇ schedule.csv", data=sch.to_csv().encode(),
+                       file_name=f"{prefix}_schedule.csv", key=f"{prefix}_dl_s")
+    c2.download_button("⬇ flows.csv",
+                       data=pd.DataFrame(res.flows[:, :T], index=link_ids,
+                                         columns=hours).to_csv().encode(),
+                       file_name=f"{prefix}_flows.csv", key=f"{prefix}_dl_f")
+    c3.download_button("⬇ heads.csv",
+                       data=pd.DataFrame(res.heads[:, :T], index=node_ids,
+                                         columns=hours).to_csv().encode(),
+                       file_name=f"{prefix}_heads.csv", key=f"{prefix}_dl_h")
 
 
 def _render_coupled_result(st) -> None:
@@ -215,9 +277,14 @@ def _render_coupled_result(st) -> None:
     # ---- cost / voltage / loss comparison table ----
     st.markdown("##### Decoupled vs coupled")
     def _r(name, d, c, fmt="{:.4f}"):
+        if np.isfinite(d) and np.isfinite(c) and abs(d) > 1e-12:
+            pct = 100.0 * (c - d) / abs(d)
+            pct_s = f"{'▼' if pct < 0 else '▲'} {abs(pct):.1f}%"
+        else:
+            pct_s = "—"
         return {"metric": name, "decoupled (water-only)": fmt.format(d),
                 "coupled (C-OWPF)": fmt.format(c),
-                "Δ": fmt.format(c - d)}
+                "Δ": fmt.format(c - d), "Δ %": pct_s}
     cmp = pd.DataFrame([
         _r("pump-energy cost ($)", dec.energy_cost, cpl.energy_cost),
         _r("network-loss cost ($)", dec.loss_cost, cpl.loss_cost),
@@ -235,11 +302,30 @@ def _render_coupled_result(st) -> None:
 
     T = cpl.voltage.shape[1]
     h0 = min(12, T - 1)
-    tab_names = ["Feeder map", "Voltage profile", "Pump schedule",
-                 "PV reactive", "Search trace"]
+    tab_names = ["🔗 Coupling map", "Feeder map", "Voltage profile", "Pump schedule",
+                 "PV reactive", "Search trace", "Decoupled solution"]
     if R.get("prv_fig") is not None:
         tab_names.append("PRV")
     tabs = st.tabs(tab_names)
+    with tabs[0]:
+        if R.get("water_md") is not None:
+            st.plotly_chart(
+                P.coupled_network_map(R["water_md"], fmeta, R["pump_bus"],
+                                      R.get("pump_ids"), R.get("pv_buses"),
+                                      R.get("valve_link_ids")),
+                use_container_width=True, key="cpl_couplemap")
+            st.caption("The interdependent energy systems: pumps (red links) in the "
+                       "water network draw their electrical power from the feeder "
+                       "buses they connect to (dashed red = the Ξ coupling). PRVs are "
+                       "purple; PV inverters are stars. This is the connection the "
+                       "C-OWPF co-optimizes across.")
+        else:
+            st.info("Re-run the case to build the coupling map.")
+    tabs = list(tabs)[1:]     # drop the map tab so the code below keeps indices 0..5
+                              # (list() first: st.tabs' return is not list-concatable)
+    with tabs[5]:
+        _render_solution_tables(st, dec, R, prefix="dec",
+                                title="Decoupled (water-only) solution")
     if R.get("prv_fig") is not None:
         with tabs[-1]:
             st.plotly_chart(R["prv_fig"], use_container_width=True, key="cpl_prv_fig")
